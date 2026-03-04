@@ -241,8 +241,7 @@ main {
 
 /* Last play highlight */
 .tile.last-play {
-  border-color: #e03020;
-  border-width: 2px;
+  background: #a8d8a0;
 }
 
 /* ========================
