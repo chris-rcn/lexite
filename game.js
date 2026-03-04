@@ -76,6 +76,11 @@ async function init() {
   document.getElementById('btn-play').addEventListener('click', submitPlayerMove);
   document.getElementById('btn-pass').addEventListener('click', passPlayerTurn);
   document.getElementById('blank-cancel').addEventListener('click', cancelBlankDialog);
+  document.getElementById('bag-info').addEventListener('click', showUnseenDialog);
+  document.getElementById('unseen-close').addEventListener('click', closeUnseenDialog);
+  document.getElementById('unseen-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('unseen-overlay')) closeUnseenDialog();
+  });
   document.getElementById('btn-play-again').addEventListener('click', () => {
     document.getElementById('end-overlay').classList.add('hidden');
     newGame();
@@ -265,6 +270,44 @@ function updateBagCount() {
   const bagLen = state.bag.length;
   const unseen = bagLen + state.computerRack.length;
   document.getElementById('bag-info-text').textContent = `${unseen} unseen (${bagLen} in bag)`;
+}
+
+function showUnseenDialog() {
+  const counts = {};
+  for (const letter of state.bag) {
+    const key = letter === '?' ? '?' : letter.toUpperCase();
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  for (const tile of state.computerRack) {
+    const key = tile.isBlank ? '?' : tile.letter.toUpperCase();
+    counts[key] = (counts[key] || 0) + 1;
+  }
+
+  const grid = document.getElementById('unseen-grid');
+  grid.innerHTML = '';
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ?') {
+    const count = counts[letter] || 0;
+    const cell = document.createElement('div');
+    cell.className = 'unseen-cell' + (count === 0 ? ' unseen-zero' : '');
+
+    const face = document.createElement('div');
+    face.className = 'unseen-tile' + (letter === '?' ? ' blank-tile' : '');
+    face.textContent = letter === '?' ? '' : letter;
+
+    const cnt = document.createElement('div');
+    cnt.className = 'unseen-count';
+    cnt.textContent = count;
+
+    cell.appendChild(face);
+    cell.appendChild(cnt);
+    grid.appendChild(cell);
+  }
+
+  document.getElementById('unseen-overlay').classList.remove('hidden');
+}
+
+function closeUnseenDialog() {
+  document.getElementById('unseen-overlay').classList.add('hidden');
 }
 
 

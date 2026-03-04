@@ -273,6 +273,7 @@ main {
   font-size: 0.85rem;
   color: #555;
   text-align: center;
+  cursor: pointer;
 }
 
 
@@ -419,6 +420,85 @@ main {
   color: #888;
   font-style: italic;
 }
+
+/* ========================
+   UNSEEN TILES DIALOG
+   ======================== */
+
+#unseen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+#unseen-dialog {
+  background: #fff;
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  max-width: 340px;
+  width: 90%;
+}
+
+#unseen-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 5px;
+  margin-bottom: 12px;
+}
+
+.unseen-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.unseen-tile {
+  width: 28px;
+  height: 30px;
+  background: var(--tile-bg);
+  border: 1px solid var(--tile-border);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  font-weight: 900;
+  color: var(--tile-text);
+}
+
+.unseen-cell.unseen-zero .unseen-tile {
+  background: #e8e8e8;
+  border-color: #bbb;
+  color: #bbb;
+}
+
+.unseen-tile.blank-tile {
+  border-color: #a04030;
+}
+
+.unseen-count {
+  font-size: 0.7rem;
+  color: #555;
+  line-height: 1;
+}
+
+.unseen-cell.unseen-zero .unseen-count {
+  color: #bbb;
+}
+
+#unseen-close {
+  width: 100%;
+  background: #e0e0e0;
+  color: #444;
+}
+
+#unseen-close:hover { background: #ccc; }
 
 /* ========================
    BLANK TILE DIALOG
