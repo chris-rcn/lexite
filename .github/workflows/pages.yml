@@ -27,11 +27,6 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
-      - name: Stamp build time
-        run: |
-          BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M UTC')
-          sed -i "s/__BUILD_TIME__/$BUILD_TIME/" index.html
-
       - name: Upload site
         uses: actions/upload-pages-artifact@v3
         with:

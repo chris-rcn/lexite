@@ -90,6 +90,15 @@
   </div>
 
   <script src="game.js"></script>
-  <footer id="build-stamp">built __BUILD_TIME__</footer>
+  <footer id="build-stamp"></footer>
+  <script>
+    var d = new Date(document.lastModified);
+    document.getElementById('build-stamp').textContent =
+      'built ' + d.getUTCFullYear() + '-' +
+      String(d.getUTCMonth()+1).padStart(2,'0') + '-' +
+      String(d.getUTCDate()).padStart(2,'0') + ' ' +
+      String(d.getUTCHours()).padStart(2,'0') + ':' +
+      String(d.getUTCMinutes()).padStart(2,'0') + ' UTC';
+  </script>
 </body>
 </html>
