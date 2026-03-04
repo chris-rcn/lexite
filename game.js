@@ -180,7 +180,7 @@ function buildBoardDOM() {
           cell.classList.add('center');
           cell.dataset.label = '★';
         } else {
-          const labels = {TW:'TRIPLE\nWORD', DW:'DOUBLE\nWORD', TL:'TRIPLE\nLETTER', DL:'DOUBLE\nLETTER'};
+          const labels = {TW:'TW', DW:'DW', TL:'TL', DL:'DL'};
           cell.dataset.label = labels[bonus] || bonus;
         }
       }
