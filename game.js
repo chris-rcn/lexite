@@ -242,7 +242,7 @@ function renderRack() {
     const el = document.createElement('div');
     el.className = 'rack-tile' + (tile.isBlank ? ' blank-tile' : '');
     if (idx === state.selectedRackIdx) el.classList.add('selected');
-    el.textContent = tile.isBlank ? '?' : tile.letter;
+    el.textContent = tile.isBlank ? '' : tile.letter;
     const pts = document.createElement('span');
     pts.className = 'tile-points';
     pts.textContent = tile.isBlank ? '' : (LETTER_VALUES[tile.letter] || 0);
