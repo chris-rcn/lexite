@@ -61,6 +61,7 @@ const state = {
   consecutivePasses: 0,
   playerTurnActive: false,
   blankCallback: null,
+  lastPlay: new Set(),  // set of "row,col" keys for the most recent play
 };
 
 // ============================================================
@@ -117,6 +118,7 @@ function newGame() {
   state.selectedRackIdx = null;
   state.gameOver = false;
   state.consecutivePasses = 0;
+  state.lastPlay = new Set();
   state.playerTurnActive = true;
 
   drawTiles(state.playerRack, 7);
@@ -216,15 +218,15 @@ function renderBoard() {
       } else if (state.board[r][c]) {
         const t = state.board[r][c];
         cell.classList.add('has-tile');
-        cell.appendChild(makeTileEl(t.displayLetter || t.letter, t.isBlank, false));
+        cell.appendChild(makeTileEl(t.displayLetter || t.letter, t.isBlank, false, state.lastPlay.has(key)));
       }
     }
   }
 }
 
-function makeTileEl(letter, isBlank, pending) {
+function makeTileEl(letter, isBlank, pending, lastPlay = false) {
   const el = document.createElement('div');
-  el.className = 'tile' + (isBlank ? ' blank-tile' : '') + (pending ? ' pending' : '');
+  el.className = 'tile' + (isBlank ? ' blank-tile' : '') + (pending ? ' pending' : '') + (lastPlay ? ' last-play' : '');
   el.textContent = letter.toUpperCase();
   const pts = document.createElement('span');
   pts.className = 'tile-points';
@@ -682,8 +684,10 @@ function submitPlayerMove() {
   state.playerScore += score;
 
   // Commit tiles to board
+  state.lastPlay = new Set();
   for (const p of state.pending) {
     state.board[p.row][p.col] = { letter: p.letter, isBlank: p.isBlank, displayLetter: p.displayLetter || p.letter };
+    state.lastPlay.add(`${p.row},${p.col}`);
   }
 
   const wordNames = result.formedWords.map(w => w.word.toUpperCase()).join(', ');
@@ -731,12 +735,14 @@ async function computerTurn() {
     logEntry('Computer: passed', 'computer');
     showStatus('Computer passed.');
   } else {
+    state.lastPlay = new Set();
     for (const p of move.placements) {
       state.board[p.row][p.col] = {
         letter: p.letter,
         isBlank: p.isBlank,
         displayLetter: p.letter
       };
+      state.lastPlay.add(`${p.row},${p.col}`);
     }
     state.computerScore += move.score;
     state.consecutivePasses = 0;
