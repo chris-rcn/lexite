@@ -324,7 +324,7 @@ main {
   -webkit-user-drag: none;
   -webkit-touch-callout: none;
   box-shadow: 1px 2px 0 rgba(0,0,0,0.3);
-  transition: transform 0.1s, box-shadow 0.1s, background 0.1s;
+  transition: transform 0.1s, box-shadow 0.1s;
 }
 
 .rack-tile:hover {
@@ -333,8 +333,9 @@ main {
 }
 
 .rack-tile.selected {
-  background: #ffe44e;
+  background: #ffe44e !important;
   border-color: #b08000;
+  transform: none;
 }
 
 .rack-tile.blank-tile {
