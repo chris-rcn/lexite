@@ -332,12 +332,6 @@ main {
   box-shadow: 1px 5px 0 rgba(0,0,0,0.3);
 }
 
-.rack-tile.selected {
-  background: #ffe44e !important;
-  border-color: #b08000;
-  transform: none !important;
-}
-
 .rack-tile.blank-tile {
   color: #a04030;
   border-color: #a04030;
