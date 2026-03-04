@@ -173,6 +173,7 @@ main {
 }
 
 .cell:not(.has-tile):hover { filter: brightness(1.15); }
+.cell.drag-over { filter: brightness(1.3); outline: 2px solid #b08000; outline-offset: -2px; }
 
 /* Bonus labels via data attribute */
 .cell::before {

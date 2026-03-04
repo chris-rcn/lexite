@@ -56,6 +56,7 @@ const state = {
   // Tiles the player has placed this turn (not yet committed)
   pending: [],  // [{row, col, letter, isBlank, displayLetter}]
   selectedRackIdx: null,
+  dragRackIdx: null,
   wordSet: null,
   gameOver: false,
   consecutivePasses: 0,
@@ -118,6 +119,7 @@ function newGame() {
   state.isFirstMove = true;
   state.pending = [];
   state.selectedRackIdx = null;
+  state.dragRackIdx = null;
   state.gameOver = false;
   state.consecutivePasses = 0;
   state.lastPlay = new Set();
@@ -190,6 +192,18 @@ function buildBoardDOM() {
       }
 
       cell.addEventListener('click', () => onCellClick(r, c));
+      cell.addEventListener('dragover', (e) => {
+        if (state.dragRackIdx !== null) e.preventDefault();
+      });
+      cell.addEventListener('dragenter', (e) => {
+        if (state.dragRackIdx !== null) { e.preventDefault(); cell.classList.add('drag-over'); }
+      });
+      cell.addEventListener('dragleave', () => { cell.classList.remove('drag-over'); });
+      cell.addEventListener('drop', (e) => {
+        e.preventDefault();
+        cell.classList.remove('drag-over');
+        onCellDrop(r, c);
+      });
       boardEl.appendChild(cell);
     }
   }
@@ -253,6 +267,14 @@ function renderRack() {
     pts.className = 'tile-points';
     pts.textContent = tile.isBlank ? '' : (LETTER_VALUES[tile.letter] || 0);
     el.appendChild(pts);
+    el.setAttribute('draggable', 'true');
+    el.addEventListener('dragstart', (e) => {
+      if (!state.playerTurnActive) { e.preventDefault(); return; }
+      state.dragRackIdx = idx;
+      state.selectedRackIdx = idx;
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    el.addEventListener('dragend', () => { state.dragRackIdx = null; });
     el.addEventListener('click', () => onRackTileClick(idx));
     rackEl.appendChild(el);
   });
@@ -365,6 +387,20 @@ function onCellClick(r, c) {
     showBlankDialog((letter) => {
       placeOnBoard(r, c, tile, letter);
     });
+  } else {
+    placeOnBoard(r, c, tile, tile.letter);
+  }
+}
+
+function onCellDrop(r, c) {
+  if (!state.playerTurnActive) return;
+  if (state.dragRackIdx === null) return;
+  if (state.board[r][c] !== null) return;
+  if (state.pending.some(p => p.row === r && p.col === c)) return;
+
+  const tile = state.playerRack[state.dragRackIdx];
+  if (tile.isBlank) {
+    showBlankDialog((letter) => { placeOnBoard(r, c, tile, letter); });
   } else {
     placeOnBoard(r, c, tile, tile.letter);
   }
