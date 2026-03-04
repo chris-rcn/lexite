@@ -74,7 +74,6 @@ async function init() {
   document.getElementById('btn-shuffle').addEventListener('click', shufflePlayerRack);
   document.getElementById('btn-recall').addEventListener('click', recallAllTiles);
   document.getElementById('btn-play').addEventListener('click', submitPlayerMove);
-  document.getElementById('btn-pass').addEventListener('click', passPlayerTurn);
   document.getElementById('blank-cancel').addEventListener('click', cancelBlankDialog);
   document.getElementById('bag-info').addEventListener('click', showUnseenDialog);
   document.getElementById('unseen-close').addEventListener('click', closeUnseenDialog);
@@ -326,7 +325,6 @@ function logEntry(msg, cls) {
 function enablePlayerControls(on) {
   state.playerTurnActive = on;
   document.getElementById('btn-play').disabled = !on;
-  document.getElementById('btn-pass').disabled = !on;
   document.getElementById('btn-shuffle').disabled = !on;
   document.getElementById('btn-recall').disabled = !on;
 }
@@ -708,6 +706,11 @@ function scorePlacement(pending, isHorizMove) {
 
 function submitPlayerMove() {
   if (!state.playerTurnActive || state.gameOver) return;
+
+  if (state.pending.length === 0) {
+    if (confirm('You have no tiles placed. Pass your turn?')) passPlayerTurn();
+    return;
+  }
 
   const result = validatePlayerMove();
   if (!result.valid) {
