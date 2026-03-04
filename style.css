@@ -191,8 +191,9 @@ main {
 .cell.dl  { background: var(--dl-color); }
 .cell.center { background: var(--center-color); }
 
-/* Cells with tiles clear the label */
+/* Cells with tiles clear the label and border */
 .cell.has-tile::before { display: none; }
+.cell.has-tile { border-color: transparent; }
 
 /* ========================
    TILES (on board & in rack)
