@@ -162,7 +162,7 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--cell-border);
+  border: none;
   position: relative;
   cursor: pointer;
   font-size: calc(var(--cell-size) * 0.28);
