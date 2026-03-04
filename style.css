@@ -209,7 +209,7 @@ main {
   align-items: center;
   justify-content: center;
   position: relative;
-  font-size: calc(var(--cell-size) * 0.44);
+  font-size: calc(var(--cell-size) * 0.58);
   font-weight: 900;
   color: var(--tile-text);
   cursor: default;
@@ -306,7 +306,7 @@ main {
   align-items: center;
   justify-content: center;
   position: relative;
-  font-size: 1.3rem;
+  font-size: 1.7rem;
   font-weight: 900;
   color: var(--tile-text);
   cursor: pointer;
@@ -591,6 +591,6 @@ main {
   .rack-tile {
     width: 40px;
     height: 44px;
-    font-size: 1.1rem;
+    font-size: 1.4rem;
   }
 }
