@@ -524,6 +524,7 @@ function placeOnBoard(r, c, tile, letter) {
   });
   renderRack();
   renderBoard();
+  updateScoreBubble();
 }
 
 function recallTile(idx) {
@@ -531,6 +532,7 @@ function recallTile(idx) {
   state.playerRack.push({ letter: p.isBlank ? '?' : p.letter, isBlank: p.isBlank });
   renderRack();
   renderBoard();
+  updateScoreBubble();
 }
 
 function recallAllTiles() {
@@ -541,6 +543,7 @@ function recallAllTiles() {
   state.selectedRackIdx = null;
   renderRack();
   renderBoard();
+  updateScoreBubble();
 }
 
 function shufflePlayerRack() {
@@ -844,6 +847,43 @@ function scorePlacement(pending, isHorizMove) {
 }
 
 // ============================================================
+// SCORE BUBBLE
+// ============================================================
+
+function updateScoreBubble() {
+  const bubble = document.getElementById('score-bubble');
+  const pending = state.pending;
+
+  if (!pending.length) {
+    bubble.classList.add('hidden');
+    return;
+  }
+
+  const result = validatePlayerMove();
+  if (!result.valid) {
+    bubble.classList.add('hidden');
+    return;
+  }
+
+  const score = scorePlacement(pending, result.dir);
+
+  // Position above (or below if near top) the last placed tile.
+  const last = pending[pending.length - 1];
+  const cellEl = getCellEl(last.row, last.col);
+  const rect = cellEl.getBoundingClientRect();
+  const aboveTop = rect.top - 36;
+
+  bubble.textContent = `+${score}`;
+  bubble.style.left = (rect.left + rect.width / 2) + 'px';
+  bubble.style.top  = (aboveTop > 4 ? aboveTop : rect.bottom + 6) + 'px';
+
+  // Re-trigger pop animation on each update.
+  bubble.classList.add('hidden');
+  bubble.offsetWidth; // force reflow
+  bubble.classList.remove('hidden');
+}
+
+// ============================================================
 // PLAYER TURN
 // ============================================================
 
@@ -881,6 +921,7 @@ function submitPlayerMove() {
   renderRack();
   renderScores();
   updateBagCount();
+  updateScoreBubble();
 
   if (checkGameOver()) return;
 

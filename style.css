@@ -669,6 +669,28 @@ main {
   }
 }
 
+/* Score preview bubble */
+#score-bubble {
+  position: fixed;
+  z-index: 600;
+  background: #27ae60;
+  color: #fff;
+  font-weight: 800;
+  font-size: 1rem;
+  padding: 5px 13px;
+  border-radius: 999px;
+  pointer-events: none;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.35);
+  white-space: nowrap;
+  animation: bubble-pop 0.15s ease-out forwards;
+}
+#score-bubble.hidden { display: none; }
+
+@keyframes bubble-pop {
+  from { opacity: 0; transform: translateX(-50%) scale(0.65); }
+  to   { opacity: 1; transform: translateX(-50%) scale(1); }
+}
+
 #build-stamp {
   text-align: center;
   font-size: 0.65rem;
