@@ -106,6 +106,7 @@ async function loadWordList() {
 // ============================================================
 
 function newGame() {
+  document.getElementById('status-bar').style.display = 'none';
   state.board = Array.from({length:15}, () => new Array(15).fill(null));
   state.bag = buildBag();
   state.playerRack = [];
