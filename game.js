@@ -1082,12 +1082,7 @@ function endGame(reason) {
   else if (cScore > pScore) winner = 'Computer wins.';
   else winner = "It's a tie!";
 
-  document.getElementById('end-scores').innerHTML =
-    `You: <strong>${pScore}</strong><br>Computer: <strong>${cScore}</strong>`;
-  document.getElementById('end-winner').textContent = winner;
-  document.getElementById('end-overlay').classList.remove('hidden');
-
-  showStatus(reason + ' Final — You: ' + pScore + ', Computer: ' + cScore);
+  showStatus(reason + ' ' + winner + ' Final — You: ' + pScore + ', Computer: ' + cScore);
   logEntry(reason, 'system');
 }
 
