@@ -740,7 +740,7 @@ function submitPlayerMove() {
 
   enablePlayerControls(false);
   state.turn = 'computer';
-  setTimeout(computerTurn, 600);
+  setTimeout(computerTurn, 300);
 }
 
 function passPlayerTurn() {
@@ -751,7 +751,7 @@ function passPlayerTurn() {
   if (checkGameOver()) return;
   enablePlayerControls(false);
   state.turn = 'computer';
-  setTimeout(computerTurn, 400);
+  setTimeout(computerTurn, 300);
 }
 
 // ============================================================
