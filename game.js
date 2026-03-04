@@ -255,8 +255,11 @@ function makeTileEl(letter, isBlank, pending, lastPlay = false) {
 // TOUCH DRAG (iOS Safari fallback)
 // ============================================================
 
-let touchGhost = null;
-let touchLastCell = null;
+const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+let touchGhost     = null;
+let touchLastCell  = null;
+let touchSourceEl  = null;
 
 function onTouchTileStart(e, idx) {
   if (!state.playerTurnActive) return;
@@ -264,6 +267,10 @@ function onTouchTileStart(e, idx) {
 
   state.dragRackIdx = idx;
   state.selectedRackIdx = idx;
+
+  // Hide the source tile so only the ghost is visible
+  touchSourceEl = e.currentTarget;
+  touchSourceEl.style.opacity = '0';
 
   const tile = state.playerRack[idx];
   const touch = e.touches[0];
@@ -332,6 +339,7 @@ function onTouchDragEnd(e) {
 
   if (touchLastCell) { touchLastCell.classList.remove('drag-over'); touchLastCell = null; }
   if (touchGhost) { touchGhost.remove(); touchGhost = null; }
+  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl = null; }
 
   if (e.type === 'touchend' && e.changedTouches.length) {
     const touch = e.changedTouches[0];
@@ -363,7 +371,7 @@ function renderRack() {
     pts.className = 'tile-points';
     pts.textContent = tile.isBlank ? '' : (LETTER_VALUES[tile.letter] || 0);
     el.appendChild(pts);
-    el.setAttribute('draggable', 'true');
+    if (!isTouchDevice) el.setAttribute('draggable', 'true');
     el.addEventListener('dragstart', (e) => {
       if (!state.playerTurnActive) { e.preventDefault(); return; }
       state.dragRackIdx = idx;
