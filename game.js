@@ -1067,6 +1067,7 @@ function endGame(reason) {
   else if (cScore > pScore) winner = 'Computer wins.';
   else winner = "It's a tie!";
 
+  logEntry(`${winner} Final score — You: ${pScore}, Computer: ${cScore}`, 'system');
   logEntry(reason, 'system');
 }
 
