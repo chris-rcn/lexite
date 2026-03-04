@@ -175,6 +175,15 @@ main {
 .cell:not(.has-tile):hover { filter: brightness(1.15); }
 .cell.drag-over { filter: brightness(1.3); outline: 2px solid #b08000; outline-offset: -2px; }
 
+.touch-drag-ghost {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  opacity: 0.85;
+  transform: scale(1.15);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+}
+
 /* Bonus labels via data attribute */
 .cell::before {
   content: attr(data-label);

@@ -252,6 +252,87 @@ function makeTileEl(letter, isBlank, pending, lastPlay = false) {
 }
 
 // ============================================================
+// TOUCH DRAG (iOS Safari fallback)
+// ============================================================
+
+let touchGhost = null;
+let touchLastCell = null;
+
+function onTouchTileStart(e, idx) {
+  if (!state.playerTurnActive) return;
+  e.preventDefault();
+
+  state.dragRackIdx = idx;
+  state.selectedRackIdx = idx;
+
+  const tile = state.playerRack[idx];
+  const touch = e.touches[0];
+
+  // Build ghost
+  touchGhost = document.createElement('div');
+  touchGhost.className = 'rack-tile touch-drag-ghost' + (tile.isBlank ? ' blank-tile' : '');
+  touchGhost.textContent = tile.isBlank ? '' : tile.letter;
+  if (!tile.isBlank) {
+    const pts = document.createElement('span');
+    pts.className = 'tile-points';
+    pts.textContent = LETTER_VALUES[tile.letter] || 0;
+    touchGhost.appendChild(pts);
+  }
+  positionGhost(touch.clientX, touch.clientY);
+  document.body.appendChild(touchGhost);
+
+  document.addEventListener('touchmove', onTouchDragMove, { passive: false });
+  document.addEventListener('touchend', onTouchDragEnd, { passive: false });
+  document.addEventListener('touchcancel', onTouchDragEnd, { passive: false });
+}
+
+function positionGhost(x, y) {
+  const size = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--cell-size')) || 44;
+  touchGhost.style.left = (x - size / 2) + 'px';
+  touchGhost.style.top  = (y - size / 2) + 'px';
+}
+
+function onTouchDragMove(e) {
+  e.preventDefault();
+  const touch = e.touches[0];
+  positionGhost(touch.clientX, touch.clientY);
+
+  // Highlight cell under finger
+  touchGhost.style.display = 'none';
+  const el = document.elementFromPoint(touch.clientX, touch.clientY);
+  touchGhost.style.display = '';
+
+  const cell = el && el.closest('.cell');
+  if (cell !== touchLastCell) {
+    if (touchLastCell) touchLastCell.classList.remove('drag-over');
+    touchLastCell = cell;
+    if (cell && !cell.classList.contains('has-tile')) cell.classList.add('drag-over');
+  }
+}
+
+function onTouchDragEnd(e) {
+  document.removeEventListener('touchmove', onTouchDragMove);
+  document.removeEventListener('touchend', onTouchDragEnd);
+  document.removeEventListener('touchcancel', onTouchDragEnd);
+
+  if (touchLastCell) { touchLastCell.classList.remove('drag-over'); touchLastCell = null; }
+  if (touchGhost) { touchGhost.remove(); touchGhost = null; }
+
+  if (e.type === 'touchend' && e.changedTouches.length) {
+    const touch = e.changedTouches[0];
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    const cell = el && el.closest('.cell');
+    if (cell) {
+      const r = parseInt(cell.dataset.row);
+      const c = parseInt(cell.dataset.col);
+      onCellDrop(r, c);
+    }
+  }
+
+  state.dragRackIdx = null;
+}
+
+// ============================================================
 // RACK RENDERING
 // ============================================================
 
@@ -275,6 +356,7 @@ function renderRack() {
       e.dataTransfer.effectAllowed = 'move';
     });
     el.addEventListener('dragend', () => { state.dragRackIdx = null; });
+    el.addEventListener('touchstart', (e) => onTouchTileStart(e, idx), { passive: false });
     el.addEventListener('click', () => onRackTileClick(idx));
     rackEl.appendChild(el);
   });
