@@ -429,9 +429,8 @@ function renderRack() {
 }
 
 function reorderRack(fromIdx, toIdx) {
-  const tile = state.playerRack[fromIdx];
-  state.playerRack[fromIdx] = state.playerRack[toIdx];
-  state.playerRack[toIdx] = tile;
+  const [tile] = state.playerRack.splice(fromIdx, 1);
+  state.playerRack.splice(toIdx, 0, tile);
   if (state.selectedRackIdx === fromIdx) state.selectedRackIdx = toIdx;
   renderRack();
 }
