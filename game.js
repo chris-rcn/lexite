@@ -121,6 +121,7 @@ function newGame() {
   state.gameOver = false;
   state.consecutivePasses = 0;
   state.lastPlay = new Set();
+  state.lifelineUsed = false;
   state.playerTurnActive = true;
 
   drawTiles(state.playerRack, 7);
@@ -326,7 +327,7 @@ function logEntry(msg, cls) {
 function enablePlayerControls(on) {
   state.playerTurnActive = on;
   document.getElementById('btn-play').disabled = !on;
-  document.getElementById('btn-lifeline').disabled = !on;
+  document.getElementById('btn-lifeline').disabled = !on || state.lifelineUsed;
   document.getElementById('btn-shuffle').disabled = !on;
   document.getElementById('btn-recall').disabled = !on;
 }
@@ -775,7 +776,9 @@ async function findBestPlayerMove() {
 }
 
 async function lifelineTurn() {
-  if (!state.playerTurnActive || state.gameOver) return;
+  if (!state.playerTurnActive || state.gameOver || state.lifelineUsed) return;
+  state.lifelineUsed = true;
+  document.getElementById('btn-lifeline').disabled = true;
   recallAllTiles();
   enablePlayerControls(false);
 
