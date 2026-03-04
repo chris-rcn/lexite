@@ -172,7 +172,7 @@ main {
   transition: filter 0.1s;
 }
 
-.cell:hover { filter: brightness(1.15); }
+.cell:not(.has-tile):hover { filter: brightness(1.15); }
 
 /* Bonus labels via data attribute */
 .cell::before {
