@@ -339,11 +339,7 @@ function enablePlayerControls(on) {
 
 function onRackTileClick(idx) {
   if (!state.playerTurnActive) return;
-  if (state.selectedRackIdx === idx) {
-    state.selectedRackIdx = null;
-  } else {
-    state.selectedRackIdx = idx;
-  }
+  state.selectedRackIdx = idx;
   renderRack();
 }
 
