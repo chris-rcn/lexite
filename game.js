@@ -72,6 +72,7 @@ async function init() {
   buildBlankLetterGrid();
   document.getElementById('btn-new-game').addEventListener('click', newGame);
   document.getElementById('btn-shuffle').addEventListener('click', shufflePlayerRack);
+  document.getElementById('btn-lifeline').addEventListener('click', lifelineTurn);
   document.getElementById('btn-recall').addEventListener('click', recallAllTiles);
   document.getElementById('btn-play').addEventListener('click', submitPlayerMove);
   document.getElementById('blank-cancel').addEventListener('click', cancelBlankDialog);
@@ -325,6 +326,7 @@ function logEntry(msg, cls) {
 function enablePlayerControls(on) {
   state.playerTurnActive = on;
   document.getElementById('btn-play').disabled = !on;
+  document.getElementById('btn-lifeline').disabled = !on;
   document.getElementById('btn-shuffle').disabled = !on;
   document.getElementById('btn-recall').disabled = !on;
 }
@@ -757,6 +759,61 @@ function passPlayerTurn() {
   setTimeout(computerTurn, 300);
 }
 
+async function findBestPlayerMove() {
+  let bestScore = -1;
+  let bestMove = null;
+  for (let i = 0; i < 15; i++) {
+    if (i % 3 === 0) await yieldToUI();
+    for (const isHoriz of [true, false]) {
+      const moves = findMovesInLine(i, isHoriz, state.playerRack);
+      for (const m of moves) {
+        if (m.score > bestScore) { bestScore = m.score; bestMove = m; }
+      }
+    }
+  }
+  return bestScore > 0 ? bestMove : null;
+}
+
+async function lifelineTurn() {
+  if (!state.playerTurnActive || state.gameOver) return;
+  recallAllTiles();
+  enablePlayerControls(false);
+
+  const t0 = performance.now();
+  const move = await findBestPlayerMove();
+  const ms = Math.round(performance.now() - t0);
+
+  if (!move) {
+    state.consecutivePasses++;
+    logEntry(`You: passed in ${ms}ms [lifeline]`, 'player');
+    if (checkGameOver()) return;
+  } else {
+    state.lastPlay = new Set();
+    for (const p of move.placements) {
+      state.board[p.row][p.col] = { letter: p.letter, isBlank: p.isBlank, displayLetter: p.letter };
+      state.lastPlay.add(`${p.row},${p.col}`);
+    }
+    state.playerScore += move.score;
+    state.consecutivePasses = 0;
+    state.isFirstMove = false;
+    for (const p of move.placements) {
+      const idx = state.playerRack.findIndex(t =>
+        p.isBlank ? t.isBlank : (t.letter.toLowerCase() === p.letter.toLowerCase() && !t.isBlank)
+      );
+      if (idx !== -1) state.playerRack.splice(idx, 1);
+    }
+    drawTiles(state.playerRack, 7 - state.playerRack.length);
+    logEntry(`You: ${move.word.toUpperCase()} (+${move.score}) in ${ms}ms [lifeline]`, 'player');
+    renderBoard();
+    renderScores();
+    updateBagCount();
+    if (checkGameOver()) return;
+  }
+
+  state.turn = 'computer';
+  setTimeout(computerTurn, 300);
+}
+
 // ============================================================
 // COMPUTER TURN
 // ============================================================
@@ -837,9 +894,8 @@ async function findBestComputerMove() {
   return bestScore > 0 ? bestMove : null;
 }
 
-function findMovesInLine(lineIdx, isHoriz) {
+function findMovesInLine(lineIdx, isHoriz, rack = state.computerRack) {
   const results = [];
-  const rack = state.computerRack;
 
   // Build fixed letter array for this line
   const fixed = new Array(15).fill(null);
