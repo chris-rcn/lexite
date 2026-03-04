@@ -382,8 +382,9 @@ function buildBlankLetterGrid() {
     const btn = document.createElement('button');
     btn.textContent = ch;
     btn.addEventListener('click', () => {
+      const cb = state.blankCallback;
       hideBlankDialog();
-      if (state.blankCallback) state.blankCallback(ch);
+      if (cb) cb(ch);
     });
     grid.appendChild(btn);
   }
