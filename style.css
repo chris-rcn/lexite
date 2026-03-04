@@ -327,10 +327,6 @@ main {
   transition: transform 0.1s, box-shadow 0.1s;
 }
 
-.rack-tile:hover {
-  box-shadow: 1px 5px 0 rgba(0,0,0,0.3);
-}
-
 .rack-tile.blank-tile {
   color: #a04030;
   border-color: #a04030;
