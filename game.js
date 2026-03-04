@@ -740,6 +740,13 @@ async function computerTurn() {
     state.computerScore += move.score;
     state.consecutivePasses = 0;
     state.isFirstMove = false;
+    // Remove played tiles from the computer's rack before drawing replacements
+    for (const p of move.placements) {
+      const idx = state.computerRack.findIndex(t =>
+        p.isBlank ? t.isBlank : (t.letter.toLowerCase() === p.letter.toLowerCase() && !t.isBlank)
+      );
+      if (idx !== -1) state.computerRack.splice(idx, 1);
+    }
     drawTiles(state.computerRack, 7 - state.computerRack.length);
 
     const wordStr = move.word.toUpperCase();
