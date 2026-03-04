@@ -668,3 +668,11 @@ main {
     font-size: 1.4rem;
   }
 }
+
+#build-stamp {
+  text-align: center;
+  font-size: 0.65rem;
+  color: #888;
+  padding: 6px 0 10px;
+  letter-spacing: 0.04em;
+}
