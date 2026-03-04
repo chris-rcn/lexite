@@ -177,11 +177,10 @@ main {
 /* Bonus labels via data attribute */
 .cell::before {
   content: attr(data-label);
-  font-size: calc(var(--cell-size) * 0.18);
-  font-weight: 600;
-  line-height: 1.1;
+  font-size: calc(var(--cell-size) * 0.4);
+  font-weight: 700;
+  line-height: 1;
   text-align: center;
-  white-space: pre-line;
   color: rgba(255,255,255,0.85);
   pointer-events: none;
 }
@@ -192,27 +191,27 @@ main {
 .cell.dl  { background: var(--dl-color); }
 .cell.center { background: var(--center-color); }
 
-/* Cells with tiles clear the label */
+/* Cells with tiles clear the label and border */
 .cell.has-tile::before { display: none; }
+.cell.has-tile { border-width: 0; }
 
 /* ========================
    TILES (on board & in rack)
    ======================== */
 
 .tile {
-  width: 86%;
-  height: 86%;
+  width: 100%;
+  height: 100%;
   background: var(--tile-bg);
-  border: 2px solid var(--tile-border);
-  border-radius: 4px;
+  border: 1px solid var(--tile-border);
+  border-radius: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
-  font-size: calc(var(--cell-size) * 0.44);
+  font-size: calc(var(--cell-size) * 0.58);
   font-weight: 900;
   color: var(--tile-text);
-  box-shadow: 1px 1px 0 rgba(0,0,0,0.35);
   cursor: default;
   user-select: none;
   line-height: 1;
@@ -220,9 +219,9 @@ main {
 
 .tile .tile-points {
   position: absolute;
-  bottom: 2px;
-  right: 3px;
-  font-size: calc(var(--cell-size) * 0.18);
+  bottom: 1px;
+  right: 1px;
+  font-size: calc(var(--cell-size) * 0.26);
   font-weight: 600;
   color: #5a3a00;
   line-height: 1;
@@ -238,6 +237,11 @@ main {
   background: var(--tile-pending);
   border-color: #b08000;
   cursor: pointer;
+}
+
+/* Last play highlight */
+.tile.last-play {
+  background: #a8d8a0;
 }
 
 /* ========================
@@ -269,13 +273,9 @@ main {
   font-size: 0.85rem;
   color: #555;
   text-align: center;
+  cursor: pointer;
 }
 
-#bag-count {
-  font-weight: 700;
-  color: #2c1a00;
-  font-size: 1rem;
-}
 
 #rack-section {
   display: flex;
@@ -302,7 +302,7 @@ main {
   align-items: center;
   justify-content: center;
   position: relative;
-  font-size: 1.3rem;
+  font-size: 1.7rem;
   font-weight: 900;
   color: var(--tile-text);
   cursor: pointer;
@@ -330,19 +330,12 @@ main {
 
 .rack-tile .tile-points {
   position: absolute;
-  bottom: 2px;
-  right: 3px;
-  font-size: 0.55rem;
+  bottom: 1px;
+  right: 1px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: #5a3a00;
   line-height: 1;
-}
-
-#rack-buttons {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-  justify-content: center;
 }
 
 #btn-shuffle, #btn-recall {
@@ -358,8 +351,9 @@ main {
 
 #action-buttons {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
+  margin-top: 8px;
 }
 
 .btn-primary {
@@ -368,6 +362,7 @@ main {
   font-size: 1rem;
   font-weight: 700;
   padding: 10px;
+  flex: 1;
 }
 .btn-primary:hover { background: #228b32; }
 
@@ -375,26 +370,10 @@ main {
   background: #b0a090;
   color: #2c1a00;
   padding: 8px;
+  flex: 1;
 }
 .btn-secondary:hover { background: #968070; }
 
-/* ========================
-   STATUS BAR
-   ======================== */
-
-#status-bar {
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 5px;
-  padding: 8px 10px;
-  font-size: 0.82rem;
-  min-height: 36px;
-  color: #333;
-}
-
-#status-text.error { color: #c0392b; }
-#status-text.success { color: #27ae60; }
-#status-text.thinking { color: #2471a3; font-style: italic; }
 
 /* ========================
    MOVE LOG
@@ -441,6 +420,85 @@ main {
   color: #888;
   font-style: italic;
 }
+
+/* ========================
+   UNSEEN TILES DIALOG
+   ======================== */
+
+#unseen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+#unseen-dialog {
+  background: #fff;
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  max-width: 340px;
+  width: 90%;
+}
+
+#unseen-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 5px;
+  margin-bottom: 12px;
+}
+
+.unseen-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.unseen-tile {
+  width: 28px;
+  height: 30px;
+  background: var(--tile-bg);
+  border: 1px solid var(--tile-border);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  font-weight: 900;
+  color: var(--tile-text);
+}
+
+.unseen-cell.unseen-zero .unseen-tile {
+  background: #e8e8e8;
+  border-color: #bbb;
+  color: #bbb;
+}
+
+.unseen-tile.blank-tile {
+  border-color: #a04030;
+}
+
+.unseen-count {
+  font-size: 0.7rem;
+  color: #555;
+  line-height: 1;
+}
+
+.unseen-cell.unseen-zero .unseen-count {
+  color: #bbb;
+}
+
+#unseen-close {
+  width: 100%;
+  background: #e0e0e0;
+  color: #444;
+}
+
+#unseen-close:hover { background: #ccc; }
 
 /* ========================
    BLANK TILE DIALOG
@@ -587,6 +645,6 @@ main {
   .rack-tile {
     width: 40px;
     height: 44px;
-    font-size: 1.1rem;
+    font-size: 1.4rem;
   }
 }

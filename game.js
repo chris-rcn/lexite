@@ -61,6 +61,7 @@ const state = {
   consecutivePasses: 0,
   playerTurnActive: false,
   blankCallback: null,
+  lastPlay: new Set(),  // set of "row,col" keys for the most recent play
 };
 
 // ============================================================
@@ -75,6 +76,11 @@ async function init() {
   document.getElementById('btn-play').addEventListener('click', submitPlayerMove);
   document.getElementById('btn-pass').addEventListener('click', passPlayerTurn);
   document.getElementById('blank-cancel').addEventListener('click', cancelBlankDialog);
+  document.getElementById('bag-info').addEventListener('click', showUnseenDialog);
+  document.getElementById('unseen-close').addEventListener('click', closeUnseenDialog);
+  document.getElementById('unseen-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('unseen-overlay')) closeUnseenDialog();
+  });
   document.getElementById('btn-play-again').addEventListener('click', () => {
     document.getElementById('end-overlay').classList.add('hidden');
     newGame();
@@ -85,7 +91,6 @@ async function init() {
 }
 
 async function loadWordList() {
-  showStatus('Loading dictionary…', 'thinking');
   try {
     const resp = await fetch('words.txt');
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -93,9 +98,7 @@ async function loadWordList() {
     state.wordSet = new Set(
       text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2)
     );
-    showStatus('Dictionary loaded.');
   } catch (e) {
-    showStatus('Failed to load dictionary. Serve via HTTP, not file://.', 'error');
     throw e;
   }
 }
@@ -117,6 +120,7 @@ function newGame() {
   state.selectedRackIdx = null;
   state.gameOver = false;
   state.consecutivePasses = 0;
+  state.lastPlay = new Set();
   state.playerTurnActive = true;
 
   drawTiles(state.playerRack, 7);
@@ -127,7 +131,6 @@ function newGame() {
   renderScores();
   updateBagCount();
   clearLog();
-  showStatus("Your turn. Place tiles on the board, then click Play Word.");
   enablePlayerControls(true);
 }
 
@@ -180,7 +183,7 @@ function buildBoardDOM() {
           cell.classList.add('center');
           cell.dataset.label = '★';
         } else {
-          const labels = {TW:'TRIPLE\nWORD', DW:'DOUBLE\nWORD', TL:'TRIPLE\nLETTER', DL:'DOUBLE\nLETTER'};
+          const labels = {TW:'TW', DW:'DW', TL:'TL', DL:'DL'};
           cell.dataset.label = labels[bonus] || bonus;
         }
       }
@@ -216,15 +219,15 @@ function renderBoard() {
       } else if (state.board[r][c]) {
         const t = state.board[r][c];
         cell.classList.add('has-tile');
-        cell.appendChild(makeTileEl(t.displayLetter || t.letter, t.isBlank, false));
+        cell.appendChild(makeTileEl(t.displayLetter || t.letter, t.isBlank, false, state.lastPlay.has(key)));
       }
     }
   }
 }
 
-function makeTileEl(letter, isBlank, pending) {
+function makeTileEl(letter, isBlank, pending, lastPlay = false) {
   const el = document.createElement('div');
-  el.className = 'tile' + (isBlank ? ' blank-tile' : '') + (pending ? ' pending' : '');
+  el.className = 'tile' + (isBlank ? ' blank-tile' : '') + (pending ? ' pending' : '') + (lastPlay ? ' last-play' : '');
   el.textContent = letter.toUpperCase();
   const pts = document.createElement('span');
   pts.className = 'tile-points';
@@ -244,7 +247,7 @@ function renderRack() {
     const el = document.createElement('div');
     el.className = 'rack-tile' + (tile.isBlank ? ' blank-tile' : '');
     if (idx === state.selectedRackIdx) el.classList.add('selected');
-    el.textContent = tile.isBlank ? '?' : tile.letter;
+    el.textContent = tile.isBlank ? '' : tile.letter;
     const pts = document.createElement('span');
     pts.className = 'tile-points';
     pts.textContent = tile.isBlank ? '' : (LETTER_VALUES[tile.letter] || 0);
@@ -264,14 +267,49 @@ function renderScores() {
 }
 
 function updateBagCount() {
-  document.getElementById('bag-count').textContent = state.bag.length;
+  const bagLen = state.bag.length;
+  const unseen = bagLen + state.computerRack.length;
+  document.getElementById('bag-info-text').textContent = `${unseen} unseen (${bagLen} in bag)`;
 }
 
-function showStatus(msg, type) {
-  const el = document.getElementById('status-text');
-  el.textContent = msg;
-  el.className = type || '';
+function showUnseenDialog() {
+  const counts = {};
+  for (const letter of state.bag) {
+    const key = letter === '?' ? '?' : letter.toUpperCase();
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  for (const tile of state.computerRack) {
+    const key = tile.isBlank ? '?' : tile.letter.toUpperCase();
+    counts[key] = (counts[key] || 0) + 1;
+  }
+
+  const grid = document.getElementById('unseen-grid');
+  grid.innerHTML = '';
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ?') {
+    const count = counts[letter] || 0;
+    const cell = document.createElement('div');
+    cell.className = 'unseen-cell' + (count === 0 ? ' unseen-zero' : '');
+
+    const face = document.createElement('div');
+    face.className = 'unseen-tile' + (letter === '?' ? ' blank-tile' : '');
+    face.textContent = letter === '?' ? '' : letter;
+
+    const cnt = document.createElement('div');
+    cnt.className = 'unseen-count';
+    cnt.textContent = count;
+
+    cell.appendChild(face);
+    cell.appendChild(cnt);
+    grid.appendChild(cell);
+  }
+
+  document.getElementById('unseen-overlay').classList.remove('hidden');
 }
+
+function closeUnseenDialog() {
+  document.getElementById('unseen-overlay').classList.add('hidden');
+}
+
 
 function clearLog() {
   document.getElementById('move-log').innerHTML = '';
@@ -282,8 +320,7 @@ function logEntry(msg, cls) {
   const div = document.createElement('div');
   div.className = 'log-entry ' + (cls || 'system');
   div.textContent = msg;
-  log.appendChild(div);
-  log.scrollTop = log.scrollHeight;
+  log.prepend(div);
 }
 
 function enablePlayerControls(on) {
@@ -382,8 +419,9 @@ function buildBlankLetterGrid() {
     const btn = document.createElement('button');
     btn.textContent = ch;
     btn.addEventListener('click', () => {
+      const cb = state.blankCallback;
       hideBlankDialog();
-      if (state.blankCallback) state.blankCallback(ch);
+      if (cb) cb(ch);
     });
     grid.appendChild(btn);
   }
@@ -673,7 +711,6 @@ function submitPlayerMove() {
 
   const result = validatePlayerMove();
   if (!result.valid) {
-    showStatus(result.error, 'error');
     return;
   }
 
@@ -681,8 +718,10 @@ function submitPlayerMove() {
   state.playerScore += score;
 
   // Commit tiles to board
+  state.lastPlay = new Set();
   for (const p of state.pending) {
     state.board[p.row][p.col] = { letter: p.letter, isBlank: p.isBlank, displayLetter: p.displayLetter || p.letter };
+    state.lastPlay.add(`${p.row},${p.col}`);
   }
 
   const wordNames = result.formedWords.map(w => w.word.toUpperCase()).join(', ');
@@ -701,7 +740,7 @@ function submitPlayerMove() {
 
   enablePlayerControls(false);
   state.turn = 'computer';
-  setTimeout(computerTurn, 600);
+  setTimeout(computerTurn, 300);
 }
 
 function passPlayerTurn() {
@@ -712,7 +751,7 @@ function passPlayerTurn() {
   if (checkGameOver()) return;
   enablePlayerControls(false);
   state.turn = 'computer';
-  setTimeout(computerTurn, 400);
+  setTimeout(computerTurn, 300);
 }
 
 // ============================================================
@@ -720,31 +759,39 @@ function passPlayerTurn() {
 // ============================================================
 
 async function computerTurn() {
-  showStatus('Computer is thinking…', 'thinking');
   await yieldToUI();
 
+  const t0 = performance.now();
   const move = await findBestComputerMove();
+  const ms = Math.round(performance.now() - t0);
 
   if (!move) {
     state.consecutivePasses++;
-    logEntry('Computer: passed', 'computer');
-    showStatus('Computer passed.');
+    logEntry(`Computer: passed in ${ms}ms`, 'computer');
   } else {
+    state.lastPlay = new Set();
     for (const p of move.placements) {
       state.board[p.row][p.col] = {
         letter: p.letter,
         isBlank: p.isBlank,
         displayLetter: p.letter
       };
+      state.lastPlay.add(`${p.row},${p.col}`);
     }
     state.computerScore += move.score;
     state.consecutivePasses = 0;
     state.isFirstMove = false;
+    // Remove played tiles from the computer's rack before drawing replacements
+    for (const p of move.placements) {
+      const idx = state.computerRack.findIndex(t =>
+        p.isBlank ? t.isBlank : (t.letter.toLowerCase() === p.letter.toLowerCase() && !t.isBlank)
+      );
+      if (idx !== -1) state.computerRack.splice(idx, 1);
+    }
     drawTiles(state.computerRack, 7 - state.computerRack.length);
 
     const wordStr = move.word.toUpperCase();
-    logEntry(`Computer: ${wordStr} (+${move.score})`, 'computer');
-    showStatus(`Computer played "${wordStr}" for ${move.score} points.`);
+    logEntry(`Computer: ${wordStr} (+${move.score}) in ${ms}ms`, 'computer');
   }
 
   renderBoard();
@@ -754,7 +801,6 @@ async function computerTurn() {
   if (!checkGameOver()) {
     state.turn = 'player';
     enablePlayerControls(true);
-    showStatus('Your turn.');
   }
 }
 
@@ -1064,17 +1110,11 @@ function endGame(reason) {
   const pScore = state.playerScore;
   const cScore = state.computerScore;
   let winner;
-  if (pScore > cScore) winner = 'You win! 🎉';
+  if (pScore > cScore) winner = 'You win.';
   else if (cScore > pScore) winner = 'Computer wins.';
-  else winner = "It's a tie!";
+  else winner = "It's a tie.";
 
-  document.getElementById('end-scores').innerHTML =
-    `You: <strong>${pScore}</strong><br>Computer: <strong>${cScore}</strong>`;
-  document.getElementById('end-winner').textContent = winner;
-  document.getElementById('end-overlay').classList.remove('hidden');
-
-  showStatus(reason + ' Final — You: ' + pScore + ', Computer: ' + cScore);
-  logEntry(reason, 'system');
+  logEntry(`Game over. ${winner}`, 'system');
 }
 
 // ============================================================
