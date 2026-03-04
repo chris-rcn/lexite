@@ -275,8 +275,7 @@ function logEntry(msg, cls) {
   const div = document.createElement('div');
   div.className = 'log-entry ' + (cls || 'system');
   div.textContent = msg;
-  log.appendChild(div);
-  log.scrollTop = log.scrollHeight;
+  log.prepend(div);
 }
 
 function enablePlayerControls(on) {
