@@ -530,6 +530,7 @@ function placeOnBoard(r, c, tile, letter) {
 function recallTile(idx) {
   const p = state.pending.splice(idx, 1)[0];
   state.playerRack.push({ letter: p.isBlank ? '?' : p.letter, isBlank: p.isBlank });
+  state.selectedRackIdx = state.playerRack.length - 1;
   renderRack();
   renderBoard();
   updateScoreBubble();
