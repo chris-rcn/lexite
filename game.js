@@ -262,7 +262,10 @@ function renderScores() {
 }
 
 function updateBagCount() {
-  document.getElementById('bag-count').textContent = state.bag.length;
+  const bagLen = state.bag.length;
+  const unseen = bagLen + state.computerRack.length;
+  document.getElementById('bag-count').textContent = bagLen;
+  document.getElementById('unseen-count').textContent = unseen;
 }
 
 
