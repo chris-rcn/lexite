@@ -804,6 +804,7 @@ async function lifelineTurn() {
     }
     drawTiles(state.playerRack, 7 - state.playerRack.length);
     logEntry(`You: ${move.word.toUpperCase()} (+${move.score}) in ${ms}ms [lifeline]`, 'player');
+    renderRack();
     renderBoard();
     renderScores();
     updateBagCount();
