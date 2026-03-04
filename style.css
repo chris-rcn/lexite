@@ -221,7 +221,7 @@ main {
   position: absolute;
   bottom: 2px;
   right: 3px;
-  font-size: calc(var(--cell-size) * 0.18);
+  font-size: calc(var(--cell-size) * 0.26);
   font-weight: 600;
   color: #5a3a00;
   line-height: 1;
@@ -336,7 +336,7 @@ main {
   position: absolute;
   bottom: 2px;
   right: 3px;
-  font-size: 0.55rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: #5a3a00;
   line-height: 1;
