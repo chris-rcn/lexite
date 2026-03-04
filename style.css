@@ -219,8 +219,8 @@ main {
 
 .tile .tile-points {
   position: absolute;
-  bottom: 2px;
-  right: 3px;
+  bottom: 1px;
+  right: 1px;
   font-size: calc(var(--cell-size) * 0.26);
   font-weight: 600;
   color: #5a3a00;
@@ -334,8 +334,8 @@ main {
 
 .rack-tile .tile-points {
   position: absolute;
-  bottom: 2px;
-  right: 3px;
+  bottom: 1px;
+  right: 1px;
   font-size: 0.75rem;
   font-weight: 600;
   color: #5a3a00;
