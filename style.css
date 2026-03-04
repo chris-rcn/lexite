@@ -193,7 +193,7 @@ main {
 
 /* Cells with tiles clear the label and border */
 .cell.has-tile::before { display: none; }
-.cell.has-tile { border-color: transparent; }
+.cell.has-tile { border-width: 0; }
 
 /* ========================
    TILES (on board & in rack)
