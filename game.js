@@ -76,7 +76,7 @@ async function init() {
   document.getElementById('btn-recall').addEventListener('click', recallAllTiles);
   document.getElementById('btn-play').addEventListener('click', submitPlayerMove);
   document.getElementById('blank-cancel').addEventListener('click', cancelBlankDialog);
-  document.getElementById('bag-info').addEventListener('click', showUnseenDialog);
+  document.getElementById('bag-info-unseen').addEventListener('click', showUnseenDialog);
   document.getElementById('unseen-close').addEventListener('click', closeUnseenDialog);
   document.getElementById('unseen-overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('unseen-overlay')) closeUnseenDialog();
@@ -270,7 +270,8 @@ function renderScores() {
 function updateBagCount() {
   const bagLen = state.bag.length;
   const unseen = bagLen + state.computerRack.length;
-  document.getElementById('bag-info-text').textContent = `${unseen} unseen (${bagLen} in bag)`;
+  document.getElementById('bag-info-unseen').textContent = `${unseen} unseen`;
+  document.getElementById('bag-info-bag').textContent = ` (${bagLen} in bag)`;
 }
 
 function showUnseenDialog() {

@@ -273,7 +273,10 @@ main {
   font-size: 0.85rem;
   color: #555;
   text-align: center;
+}
+#bag-info-unseen {
   cursor: pointer;
+  text-decoration: underline;
 }
 
 
