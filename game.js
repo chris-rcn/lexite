@@ -1055,6 +1055,7 @@ function checkGameOver() {
 
 function endGame(reason) {
   state.gameOver = true;
+  document.getElementById('status-bar').style.display = '';
   enablePlayerControls(false);
   recallAllTiles();
 
