@@ -1063,12 +1063,11 @@ function endGame(reason) {
   const pScore = state.playerScore;
   const cScore = state.computerScore;
   let winner;
-  if (pScore > cScore) winner = 'You win! 🎉';
+  if (pScore > cScore) winner = 'You win.';
   else if (cScore > pScore) winner = 'Computer wins.';
-  else winner = "It's a tie!";
+  else winner = "It's a tie.";
 
-  logEntry(`${winner} Final score — You: ${pScore}, Computer: ${cScore}`, 'system');
-  logEntry(reason, 'system');
+  logEntry(`Game over. ${winner}`, 'system');
 }
 
 // ============================================================
