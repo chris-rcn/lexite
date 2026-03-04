@@ -767,7 +767,7 @@ async function computerTurn() {
 
   if (!move) {
     state.consecutivePasses++;
-    logEntry(`Computer: passed (${ms}ms)`, 'computer');
+    logEntry(`Computer: passed in ${ms}ms`, 'computer');
   } else {
     state.lastPlay = new Set();
     for (const p of move.placements) {
@@ -791,7 +791,7 @@ async function computerTurn() {
     drawTiles(state.computerRack, 7 - state.computerRack.length);
 
     const wordStr = move.word.toUpperCase();
-    logEntry(`Computer: ${wordStr} (+${move.score}) ${ms}ms`, 'computer');
+    logEntry(`Computer: ${wordStr} (+${move.score}) in ${ms}ms`, 'computer');
   }
 
   renderBoard();
