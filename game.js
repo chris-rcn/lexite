@@ -264,8 +264,7 @@ function renderScores() {
 function updateBagCount() {
   const bagLen = state.bag.length;
   const unseen = bagLen + state.computerRack.length;
-  document.getElementById('bag-count').textContent = bagLen;
-  document.getElementById('unseen-count').textContent = unseen;
+  document.getElementById('bag-info-text').textContent = `${unseen} unseen (${bagLen} in bag)`;
 }
 
 

@@ -275,10 +275,6 @@ main {
   text-align: center;
 }
 
-#bag-count {
-  color: #2c1a00;
-  font-size: 1rem;
-}
 
 #rack-section {
   display: flex;
