@@ -335,7 +335,7 @@ main {
 .rack-tile.selected {
   background: #ffe44e !important;
   border-color: #b08000;
-  transform: none;
+  transform: none !important;
 }
 
 .rack-tile.blank-tile {
