@@ -272,19 +272,12 @@ function onTouchTileStart(e, idx) {
   touchSourceEl = e.currentTarget;
   touchSourceEl.style.opacity = '0';
 
-  const tile = state.playerRack[idx];
   const touch = e.touches[0];
 
-  // Build ghost
-  touchGhost = document.createElement('div');
-  touchGhost.className = 'rack-tile touch-drag-ghost' + (tile.isBlank ? ' blank-tile' : '');
-  touchGhost.textContent = tile.isBlank ? '' : tile.letter;
-  if (!tile.isBlank) {
-    const pts = document.createElement('span');
-    pts.className = 'tile-points';
-    pts.textContent = LETTER_VALUES[tile.letter] || 0;
-    touchGhost.appendChild(pts);
-  }
+  // Clone the source tile — guarantees identical rendering without relying on
+  // CSS variable resolution for a dynamically-appended element.
+  touchGhost = touchSourceEl.cloneNode(true);
+  touchGhost.classList.add('touch-drag-ghost');
   positionGhost(touch.clientX, touch.clientY);
   document.body.appendChild(touchGhost);
 
@@ -302,7 +295,7 @@ function positionGhost(x, y, cellEl) {
     touchGhost.style.left = (rect.left + rect.width  / 2 - w / 2) + 'px';
     touchGhost.style.top  = (rect.top  + rect.height / 2 - h / 2) + 'px';
   } else {
-    touchGhost.style.transform = 'scale(1)';
+    touchGhost.style.transform = 'scale(1.15)';
     touchGhost.style.left = (x - w / 2) + 'px';
     touchGhost.style.top  = (y - h / 2) + 'px';
   }
@@ -377,6 +370,15 @@ function renderRack() {
       state.dragRackIdx = idx;
       state.selectedRackIdx = idx;
       e.dataTransfer.effectAllowed = 'move';
+      // Use a clone as the drag image so the browser renders the full tile
+      // instead of a platform-default outline/ghost.
+      const dragImg = el.cloneNode(true);
+      dragImg.style.position = 'fixed';
+      dragImg.style.top = '-9999px';
+      dragImg.style.left = '-9999px';
+      document.body.appendChild(dragImg);
+      e.dataTransfer.setDragImage(dragImg, el.offsetWidth / 2, el.offsetHeight / 2);
+      requestAnimationFrame(() => dragImg.remove());
     });
     el.addEventListener('dragend', () => { state.dragRackIdx = null; });
     el.addEventListener('touchstart', (e) => onTouchTileStart(e, idx), { passive: false });
