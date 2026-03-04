@@ -332,6 +332,12 @@ main {
   border-color: #b08000;
 }
 
+.rack-tile.drag-over {
+  filter: brightness(1.3);
+  outline: 2px solid #b08000;
+  outline-offset: -2px;
+}
+
 .rack-tile.blank-tile {
   color: #a04030;
   border-color: #a04030;

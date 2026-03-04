@@ -258,9 +258,10 @@ function makeTileEl(letter, isBlank, pending, lastPlay = false) {
 
 const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
-let touchGhost     = null;
-let touchLastCell  = null;
-let touchSourceEl  = null;
+let touchGhost        = null;
+let touchLastCell     = null;
+let touchLastRackTile = null;
+let touchSourceEl     = null;
 let scoreBubbleEl  = null; // cached after DOM ready
 
 function onTouchTileStart(e, idx) {
@@ -325,10 +326,19 @@ function onTouchDragMove(e) {
   const cell = el && el.closest('.cell');
   const targetCell = (cell && !cell.classList.contains('has-tile')) ? cell : null;
 
+  const rackTile = !cell && el && el.closest('.rack-tile');
+  const targetRackTile = (rackTile && rackTile !== touchSourceEl) ? rackTile : null;
+
   if (targetCell !== touchLastCell) {
     if (touchLastCell) touchLastCell.classList.remove('drag-over');
     touchLastCell = targetCell;
     if (targetCell) targetCell.classList.add('drag-over');
+  }
+
+  if (targetRackTile !== touchLastRackTile) {
+    if (touchLastRackTile) touchLastRackTile.classList.remove('drag-over');
+    touchLastRackTile = targetRackTile;
+    if (targetRackTile) targetRackTile.classList.add('drag-over');
   }
 
   positionGhost(touch.clientX, touch.clientY, targetCell);
@@ -339,18 +349,25 @@ function onTouchDragEnd(e) {
   document.removeEventListener('touchend', onTouchDragEnd);
   document.removeEventListener('touchcancel', onTouchDragEnd);
 
-  if (touchLastCell) { touchLastCell.classList.remove('drag-over'); touchLastCell = null; }
-  if (touchGhost) { touchGhost.remove(); touchGhost = null; }
-  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl = null; }
+  if (touchLastCell)     { touchLastCell.classList.remove('drag-over'); touchLastCell = null; }
+  if (touchLastRackTile) { touchLastRackTile.classList.remove('drag-over'); touchLastRackTile = null; }
+  if (touchGhost)        { touchGhost.remove(); touchGhost = null; }
+  if (touchSourceEl)     { touchSourceEl.style.opacity = ''; touchSourceEl = null; }
 
   if (e.type === 'touchend' && e.changedTouches.length) {
     const touch = e.changedTouches[0];
     const el = document.elementFromPoint(touch.clientX, touch.clientY);
     const cell = el && el.closest('.cell');
+    const rackTile = !cell && el && el.closest('.rack-tile');
     if (cell) {
       const r = parseInt(cell.dataset.row);
       const c = parseInt(cell.dataset.col);
       onCellDrop(r, c);
+    } else if (rackTile) {
+      const rackTiles = Array.from(document.querySelectorAll('#rack .rack-tile'));
+      const toIdx = rackTiles.indexOf(rackTile);
+      const fromIdx = state.dragRackIdx;
+      if (toIdx !== -1 && toIdx !== fromIdx) reorderRack(fromIdx, toIdx);
     }
   }
 
@@ -390,10 +407,33 @@ function renderRack() {
       requestAnimationFrame(() => dragImg.remove());
     });
     el.addEventListener('dragend', () => { state.dragRackIdx = null; });
+    el.addEventListener('dragover', (e) => { if (state.dragRackIdx !== null) e.preventDefault(); });
+    el.addEventListener('dragenter', (e) => {
+      if (state.dragRackIdx !== null && state.dragRackIdx !== idx) {
+        e.preventDefault(); el.classList.add('drag-over');
+      }
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      el.classList.remove('drag-over');
+      if (state.dragRackIdx !== null && state.dragRackIdx !== idx) {
+        reorderRack(state.dragRackIdx, idx);
+      }
+      state.dragRackIdx = null;
+    });
     el.addEventListener('touchstart', (e) => onTouchTileStart(e, idx), { passive: false });
     el.addEventListener('click', () => onRackTileClick(idx));
     rackEl.appendChild(el);
   });
+}
+
+function reorderRack(fromIdx, toIdx) {
+  const tile = state.playerRack[fromIdx];
+  state.playerRack[fromIdx] = state.playerRack[toIdx];
+  state.playerRack[toIdx] = tile;
+  if (state.selectedRackIdx === fromIdx) state.selectedRackIdx = toIdx;
+  renderRack();
 }
 
 // ============================================================
