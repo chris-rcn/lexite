@@ -359,6 +359,10 @@ main {
   margin-top: 8px;
 }
 
+#action-buttons button {
+  flex: 1;
+}
+
 .btn-primary {
   background: #2a7a3a;
   color: #fff;
