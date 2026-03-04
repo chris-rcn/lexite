@@ -79,6 +79,7 @@ async function init() {
   document.getElementById('blank-cancel').addEventListener('click', cancelBlankDialog);
   document.getElementById('bag-info-unseen').addEventListener('click', showUnseenDialog);
   document.getElementById('unseen-close').addEventListener('click', closeUnseenDialog);
+  scoreBubbleEl = document.getElementById('score-bubble');
   document.getElementById('unseen-overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('unseen-overlay')) closeUnseenDialog();
   });
@@ -260,6 +261,7 @@ const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 let touchGhost     = null;
 let touchLastCell  = null;
 let touchSourceEl  = null;
+let scoreBubbleEl  = null; // cached after DOM ready
 
 function onTouchTileStart(e, idx) {
   if (!state.playerTurnActive) return;
@@ -268,7 +270,11 @@ function onTouchTileStart(e, idx) {
   state.dragRackIdx = idx;
   state.selectedRackIdx = idx;
 
-  // Hide the source tile so only the ghost is visible
+  // Clean up any leftover state from an interrupted drag.
+  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl = null; }
+  if (touchGhost)    { touchGhost.remove(); touchGhost = null; }
+
+  // Hide the source tile so only the ghost is visible.
   touchSourceEl = e.currentTarget;
   touchSourceEl.style.opacity = '0';
 
@@ -852,7 +858,7 @@ function scorePlacement(pending, isHorizMove) {
 // ============================================================
 
 function updateScoreBubble() {
-  const bubble = document.getElementById('score-bubble');
+  const bubble = scoreBubbleEl;
   const pending = state.pending;
 
   if (!pending.length) {
