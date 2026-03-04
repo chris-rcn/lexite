@@ -761,11 +761,13 @@ function passPlayerTurn() {
 async function computerTurn() {
   await yieldToUI();
 
+  const t0 = performance.now();
   const move = await findBestComputerMove();
+  const ms = Math.round(performance.now() - t0);
 
   if (!move) {
     state.consecutivePasses++;
-    logEntry('Computer: passed', 'computer');
+    logEntry(`Computer: passed (${ms}ms)`, 'computer');
   } else {
     state.lastPlay = new Set();
     for (const p of move.placements) {
@@ -789,7 +791,7 @@ async function computerTurn() {
     drawTiles(state.computerRack, 7 - state.computerRack.length);
 
     const wordStr = move.word.toUpperCase();
-    logEntry(`Computer: ${wordStr} (+${move.score})`, 'computer');
+    logEntry(`Computer: ${wordStr} (+${move.score}) ${ms}ms`, 'computer');
   }
 
   renderBoard();
