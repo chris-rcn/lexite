@@ -378,24 +378,6 @@ main {
 }
 .btn-secondary:hover { background: #968070; }
 
-/* ========================
-   STATUS BAR
-   ======================== */
-
-#status-bar {
-  display: none;
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 5px;
-  padding: 8px 10px;
-  font-size: 0.82rem;
-  min-height: 36px;
-  color: #333;
-}
-
-#status-text.error { color: #c0392b; }
-#status-text.success { color: #27ae60; }
-#status-text.thinking { color: #2471a3; font-style: italic; }
 
 /* ========================
    MOVE LOG

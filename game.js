@@ -86,7 +86,6 @@ async function init() {
 }
 
 async function loadWordList() {
-  showStatus('Loading dictionary…', 'thinking');
   try {
     const resp = await fetch('words.txt');
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -94,9 +93,7 @@ async function loadWordList() {
     state.wordSet = new Set(
       text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2)
     );
-    showStatus('Dictionary loaded.');
   } catch (e) {
-    showStatus('Failed to load dictionary. Serve via HTTP, not file://.', 'error');
     throw e;
   }
 }
@@ -106,7 +103,6 @@ async function loadWordList() {
 // ============================================================
 
 function newGame() {
-  document.getElementById('status-bar').style.display = 'none';
   state.board = Array.from({length:15}, () => new Array(15).fill(null));
   state.bag = buildBag();
   state.playerRack = [];
@@ -130,7 +126,6 @@ function newGame() {
   renderScores();
   updateBagCount();
   clearLog();
-  showStatus("Your turn. Place tiles on the board, then click Play Word.");
   enablePlayerControls(true);
 }
 
@@ -270,11 +265,6 @@ function updateBagCount() {
   document.getElementById('bag-count').textContent = state.bag.length;
 }
 
-function showStatus(msg, type) {
-  const el = document.getElementById('status-text');
-  el.textContent = msg;
-  el.className = type || '';
-}
 
 function clearLog() {
   document.getElementById('move-log').innerHTML = '';
@@ -677,7 +667,6 @@ function submitPlayerMove() {
 
   const result = validatePlayerMove();
   if (!result.valid) {
-    showStatus(result.error, 'error');
     return;
   }
 
@@ -726,7 +715,6 @@ function passPlayerTurn() {
 // ============================================================
 
 async function computerTurn() {
-  showStatus('Computer is thinking…', 'thinking');
   await yieldToUI();
 
   const move = await findBestComputerMove();
@@ -734,7 +722,6 @@ async function computerTurn() {
   if (!move) {
     state.consecutivePasses++;
     logEntry('Computer: passed', 'computer');
-    showStatus('Computer passed.');
   } else {
     state.lastPlay = new Set();
     for (const p of move.placements) {
@@ -759,7 +746,6 @@ async function computerTurn() {
 
     const wordStr = move.word.toUpperCase();
     logEntry(`Computer: ${wordStr} (+${move.score})`, 'computer');
-    showStatus(`Computer played "${wordStr}" for ${move.score} points.`);
   }
 
   renderBoard();
@@ -769,7 +755,6 @@ async function computerTurn() {
   if (!checkGameOver()) {
     state.turn = 'player';
     enablePlayerControls(true);
-    showStatus('Your turn.');
   }
 }
 
@@ -1056,7 +1041,6 @@ function checkGameOver() {
 
 function endGame(reason) {
   state.gameOver = true;
-  document.getElementById('status-bar').style.display = '';
   enablePlayerControls(false);
   recallAllTiles();
 
@@ -1084,7 +1068,6 @@ function endGame(reason) {
   else if (cScore > pScore) winner = 'Computer wins.';
   else winner = "It's a tie!";
 
-  showStatus(reason + ' ' + winner + ' Final — You: ' + pScore + ', Computer: ' + cScore);
   logEntry(reason, 'system');
 }
 
