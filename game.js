@@ -269,6 +269,9 @@ function onTouchTileStart(e, idx) {
 
   state.dragRackIdx = idx;
   state.selectedRackIdx = idx;
+  document.querySelectorAll('#rack .rack-tile').forEach((el, i) => {
+    el.classList.toggle('selected', i === idx);
+  });
 
   // Clean up any leftover state from an interrupted drag.
   if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl = null; }
