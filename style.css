@@ -321,6 +321,8 @@ main {
   color: var(--tile-text);
   cursor: pointer;
   user-select: none;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
   box-shadow: 1px 2px 0 rgba(0,0,0,0.3);
   transition: transform 0.1s, box-shadow 0.1s, background 0.1s;
 }
