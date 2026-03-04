@@ -270,7 +270,7 @@ function renderScores() {
 function updateBagCount() {
   const bagLen = state.bag.length;
   const unseen = bagLen + state.computerRack.length;
-  document.getElementById('bag-info-unseen').textContent = `${unseen} unseen`;
+  document.getElementById('bag-info-unseen').textContent = `${unseen} unseen tiles`;
   document.getElementById('bag-info-bag').textContent = ` (${bagLen} in bag)`;
 }
 
