@@ -177,11 +177,10 @@ main {
 /* Bonus labels via data attribute */
 .cell::before {
   content: attr(data-label);
-  font-size: calc(var(--cell-size) * 0.18);
-  font-weight: 600;
-  line-height: 1.1;
+  font-size: calc(var(--cell-size) * 0.32);
+  font-weight: 700;
+  line-height: 1;
   text-align: center;
-  white-space: pre-line;
   color: rgba(255,255,255,0.85);
   pointer-events: none;
 }
