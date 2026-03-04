@@ -286,28 +286,45 @@ function onTouchTileStart(e, idx) {
   document.addEventListener('touchcancel', onTouchDragEnd, { passive: false });
 }
 
-function positionGhost(x, y) {
-  const size = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--cell-size')) || 44;
-  touchGhost.style.left = (x - size / 2) + 'px';
-  touchGhost.style.top  = (y - size / 2) + 'px';
+function positionGhost(x, y, cellEl) {
+  if (cellEl) {
+    const rect = cellEl.getBoundingClientRect();
+    const size = rect.width * 1.5;
+    touchGhost.style.width    = size + 'px';
+    touchGhost.style.height   = size + 'px';
+    touchGhost.style.fontSize = (size * 0.58) + 'px';
+    touchGhost.style.left = (rect.left + rect.width  / 2 - size / 2) + 'px';
+    touchGhost.style.top  = (rect.top  + rect.height / 2 - size / 2) + 'px';
+  } else {
+    touchGhost.style.width    = '';
+    touchGhost.style.height   = '';
+    touchGhost.style.fontSize = '';
+    const w = touchGhost.offsetWidth  || 48;
+    const h = touchGhost.offsetHeight || 52;
+    touchGhost.style.left = (x - w / 2) + 'px';
+    touchGhost.style.top  = (y - h / 2) + 'px';
+  }
 }
 
 function onTouchDragMove(e) {
   e.preventDefault();
   const touch = e.touches[0];
-  positionGhost(touch.clientX, touch.clientY);
 
-  // Highlight cell under finger
+  // Find cell under finger (hide ghost so it doesn't block hit-test)
   touchGhost.style.display = 'none';
   const el = document.elementFromPoint(touch.clientX, touch.clientY);
   touchGhost.style.display = '';
 
   const cell = el && el.closest('.cell');
+  const targetCell = (cell && !cell.classList.contains('has-tile')) ? cell : null;
+
   if (cell !== touchLastCell) {
     if (touchLastCell) touchLastCell.classList.remove('drag-over');
-    touchLastCell = cell;
-    if (cell && !cell.classList.contains('has-tile')) cell.classList.add('drag-over');
+    touchLastCell = targetCell;
+    if (targetCell) targetCell.classList.add('drag-over');
   }
+
+  positionGhost(touch.clientX, touch.clientY, targetCell);
 }
 
 function onTouchDragEnd(e) {
