@@ -549,17 +549,11 @@ function onRackTileClick(idx) {
 function onCellClick(r, c) {
   if (!state.playerTurnActive) return;
 
-  // Clicking a pending tile recalls it
-  const pendingIdx = state.pending.findIndex(p => p.row === r && p.col === c);
-  if (pendingIdx !== -1) {
-    recallTile(pendingIdx);
-    return;
-  }
-
   // Must have a tile selected from rack
   if (state.selectedRackIdx === null) return;
   // Cell must be empty
   if (state.board[r][c] !== null) return;
+  if (state.pending.some(p => p.row === r && p.col === c)) return;
 
   const tile = state.playerRack[state.selectedRackIdx];
 
@@ -596,15 +590,6 @@ function placeOnBoard(r, c, tile, letter) {
     isBlank: tile.isBlank,
     displayLetter: letter
   });
-  renderRack();
-  renderBoard();
-  updateScoreBubble();
-}
-
-function recallTile(idx) {
-  const p = state.pending.splice(idx, 1)[0];
-  state.playerRack.push({ letter: p.isBlank ? '?' : p.letter, isBlank: p.isBlank });
-  state.selectedRackIdx = state.playerRack.length - 1;
   renderRack();
   renderBoard();
   updateScoreBubble();
