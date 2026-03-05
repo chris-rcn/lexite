@@ -918,6 +918,39 @@ function scorePlacement(pending, isHorizMove) {
 // SCORE BUBBLE
 // ============================================================
 
+// Return the empty cell that is the best place to float the score bubble.
+// Criteria (in order): adjacent to a pending tile, not on top of a tile,
+// fewest occupied neighbours.
+function bestBubbleCell() {
+  const pending = state.pending;
+  const pendingSet = new Set(pending.map(p => `${p.row},${p.col}`));
+  const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+
+  function occupied(r, c) {
+    if (r < 0 || r >= 15 || c < 0 || c >= 15) return true;
+    return state.board[r][c] !== null || pendingSet.has(`${r},${c}`);
+  }
+
+  let best = null;
+  let bestNeighbors = Infinity;
+
+  for (const p of pending) {
+    for (const [dr, dc] of dirs) {
+      const r = p.row + dr;
+      const c = p.col + dc;
+      if (occupied(r, c)) continue;           // must be empty (criterion B)
+      const n = dirs.filter(([dr2,dc2]) => occupied(r+dr2, c+dc2)).length;
+      if (n < bestNeighbors) {
+        bestNeighbors = n;
+        best = { row: r, col: c };
+      }
+    }
+  }
+
+  // Fallback: last placed tile (bubble overlaps it, but better than nothing).
+  return best ?? pending[pending.length - 1];
+}
+
 function updateScoreBubble() {
   const bubble = scoreBubbleEl;
   const pending = state.pending;
@@ -935,9 +968,8 @@ function updateScoreBubble() {
 
   const score = scorePlacement(pending, result.dir);
 
-  // Position above (or below if near top) the last placed tile.
-  const last = pending[pending.length - 1];
-  const cellEl = getCellEl(last.row, last.col);
+  const target = bestBubbleCell();
+  const cellEl = getCellEl(target.row, target.col);
   const rect = cellEl.getBoundingClientRect();
   const aboveTop = rect.top - 36;
 
