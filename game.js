@@ -363,8 +363,7 @@ function onTouchDragEnd(e) {
 
   const fromIdx = state.dragRackIdx;
   const toIdx   = dragRackPreviewIdx;
-  state.dragRackIdx    = null;
-  dragRackPreviewIdx   = null;
+  dragRackPreviewIdx = null;
 
   if (e.type === 'touchend' && e.changedTouches.length) {
     const touch = e.changedTouches[0];
@@ -378,6 +377,8 @@ function onTouchDragEnd(e) {
       reorderRack(fromIdx, toIdx);
     }
   }
+
+  state.dragRackIdx = null;
 }
 
 // ============================================================
