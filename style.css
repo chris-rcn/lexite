@@ -669,7 +669,7 @@ main {
   font-weight: 800;
   font-size: 1rem;
   padding: 5px 8px;
-  border-radius: 999px;
+  border-radius: 5px;
   pointer-events: none;
   box-shadow: 0 3px 12px rgba(0,0,0,0.35);
   white-space: nowrap;
