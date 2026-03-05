@@ -131,6 +131,7 @@ h1 {
 main {
   display: flex;
   flex: 1;
+  flex-direction: column;
   gap: 16px;
   padding: 16px;
   align-items: flex-start;
@@ -260,9 +261,7 @@ main {
    ======================== */
 
 #sidebar {
-  flex: 1;
-  min-width: 200px;
-  max-width: 260px;
+  width: var(--board-size);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -642,7 +641,6 @@ main {
   }
 
   #sidebar {
-    max-width: 100%;
     width: 100%;
   }
 
