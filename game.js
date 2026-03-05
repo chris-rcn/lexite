@@ -288,7 +288,10 @@ function onTouchTileStart(e, idx) {
 
   // Clone the source tile — guarantees identical rendering without relying on
   // CSS variable resolution for a dynamically-appended element.
+  // Reset inline styles that were set on the source so the ghost is visible.
   touchGhost = touchSourceEl.cloneNode(true);
+  touchGhost.style.opacity = '';
+  touchGhost.style.pointerEvents = '';
   touchGhost.classList.add('touch-drag-ghost');
   positionGhost(touch.clientX, touch.clientY);
   document.body.appendChild(touchGhost);
