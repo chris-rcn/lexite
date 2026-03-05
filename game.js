@@ -410,11 +410,10 @@ function renderRack() {
       dragImg.style.left = '-9999px';
       document.body.appendChild(dragImg);
       e.dataTransfer.setDragImage(dragImg, el.offsetWidth / 2, el.offsetHeight / 2);
-      requestAnimationFrame(() => { dragImg.remove(); el.style.opacity = '0'; el.style.pointerEvents = 'none'; });
+      requestAnimationFrame(() => { dragImg.remove(); el.style.opacity = '0'; });
     });
     el.addEventListener('dragend', () => {
       el.style.opacity = '';
-      el.style.pointerEvents = '';
       document.querySelectorAll('#rack .rack-tile').forEach(t => t.style.order = '');
       state.dragRackIdx = null;
       dragRackPreviewIdx = null;
