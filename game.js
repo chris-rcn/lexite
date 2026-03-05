@@ -262,6 +262,7 @@ let touchGhost        = null;
 let touchLastCell     = null;
 let touchLastRackTile = null;
 let touchSourceEl     = null;
+let dragRackPreviewIdx = null;
 let scoreBubbleEl  = null; // cached after DOM ready
 
 function onTouchTileStart(e, idx) {
@@ -336,9 +337,15 @@ function onTouchDragMove(e) {
   }
 
   if (targetRackTile !== touchLastRackTile) {
-    if (touchLastRackTile) touchLastRackTile.classList.remove('drag-over');
     touchLastRackTile = targetRackTile;
-    if (targetRackTile) targetRackTile.classList.add('drag-over');
+    if (targetRackTile) {
+      const rackTiles = Array.from(document.querySelectorAll('#rack .rack-tile'));
+      dragRackPreviewIdx = rackTiles.indexOf(targetRackTile);
+      updateRackOrder(state.dragRackIdx, dragRackPreviewIdx);
+    } else {
+      dragRackPreviewIdx = null;
+      document.querySelectorAll('#rack .rack-tile').forEach(t => t.style.order = '');
+    }
   }
 
   positionGhost(touch.clientX, touch.clientY, targetCell);
@@ -349,29 +356,29 @@ function onTouchDragEnd(e) {
   document.removeEventListener('touchend', onTouchDragEnd);
   document.removeEventListener('touchcancel', onTouchDragEnd);
 
-  if (touchLastCell)     { touchLastCell.classList.remove('drag-over'); touchLastCell = null; }
-  if (touchLastRackTile) { touchLastRackTile.classList.remove('drag-over'); touchLastRackTile = null; }
-  if (touchGhost)        { touchGhost.remove(); touchGhost = null; }
-  if (touchSourceEl)     { touchSourceEl.style.opacity = ''; touchSourceEl = null; }
+  if (touchLastCell) { touchLastCell.classList.remove('drag-over'); touchLastCell = null; }
+  touchLastRackTile = null;
+  document.querySelectorAll('#rack .rack-tile').forEach(t => t.style.order = '');
+  if (touchGhost)    { touchGhost.remove(); touchGhost = null; }
+  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl = null; }
+
+  const fromIdx = state.dragRackIdx;
+  const toIdx   = dragRackPreviewIdx;
+  state.dragRackIdx    = null;
+  dragRackPreviewIdx   = null;
 
   if (e.type === 'touchend' && e.changedTouches.length) {
     const touch = e.changedTouches[0];
     const el = document.elementFromPoint(touch.clientX, touch.clientY);
     const cell = el && el.closest('.cell');
-    const rackTile = !cell && el && el.closest('.rack-tile');
     if (cell) {
       const r = parseInt(cell.dataset.row);
       const c = parseInt(cell.dataset.col);
       onCellDrop(r, c);
-    } else if (rackTile) {
-      const rackTiles = Array.from(document.querySelectorAll('#rack .rack-tile'));
-      const toIdx = rackTiles.indexOf(rackTile);
-      const fromIdx = state.dragRackIdx;
-      if (toIdx !== -1 && toIdx !== fromIdx) reorderRack(fromIdx, toIdx);
+    } else if (fromIdx !== null && toIdx !== null && toIdx !== fromIdx) {
+      reorderRack(fromIdx, toIdx);
     }
   }
-
-  state.dragRackIdx = null;
 }
 
 // ============================================================
@@ -404,28 +411,47 @@ function renderRack() {
       dragImg.style.left = '-9999px';
       document.body.appendChild(dragImg);
       e.dataTransfer.setDragImage(dragImg, el.offsetWidth / 2, el.offsetHeight / 2);
-      requestAnimationFrame(() => dragImg.remove());
+      requestAnimationFrame(() => { dragImg.remove(); el.style.opacity = '0'; });
     });
-    el.addEventListener('dragend', () => { state.dragRackIdx = null; });
+    el.addEventListener('dragend', () => {
+      el.style.opacity = '';
+      document.querySelectorAll('#rack .rack-tile').forEach(t => t.style.order = '');
+      state.dragRackIdx = null;
+      dragRackPreviewIdx = null;
+    });
     el.addEventListener('dragover', (e) => { if (state.dragRackIdx !== null) e.preventDefault(); });
     el.addEventListener('dragenter', (e) => {
-      if (state.dragRackIdx !== null && state.dragRackIdx !== idx) {
-        e.preventDefault(); el.classList.add('drag-over');
+      if (state.dragRackIdx !== null && idx !== state.dragRackIdx) {
+        e.preventDefault();
+        dragRackPreviewIdx = idx;
+        updateRackOrder(state.dragRackIdx, idx);
       }
     });
-    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
     el.addEventListener('drop', (e) => {
       e.preventDefault();
-      el.classList.remove('drag-over');
-      if (state.dragRackIdx !== null && state.dragRackIdx !== idx) {
-        reorderRack(state.dragRackIdx, idx);
-      }
+      const from = state.dragRackIdx;
+      const to = dragRackPreviewIdx;
       state.dragRackIdx = null;
+      dragRackPreviewIdx = null;
+      if (from !== null && to !== null && from !== to) reorderRack(from, to);
     });
     el.addEventListener('touchstart', (e) => onTouchTileStart(e, idx), { passive: false });
     el.addEventListener('click', () => onRackTileClick(idx));
     rackEl.appendChild(el);
   });
+}
+
+function updateRackOrder(fromIdx, toIdx) {
+  const tiles = Array.from(document.querySelectorAll('#rack .rack-tile'));
+  const n = tiles.length;
+  // Compute display positions as if tile at fromIdx is inserted at toIdx
+  const dispOrder = Array.from({length: n}, (_, i) => i);
+  dispOrder.splice(fromIdx, 1);
+  dispOrder.splice(toIdx, 0, fromIdx);
+  // dispOrder[displayPos] = origIdx; invert to cssOrder[origIdx] = displayPos
+  const cssOrder = new Array(n);
+  dispOrder.forEach((origIdx, dispPos) => { cssOrder[origIdx] = dispPos; });
+  tiles.forEach((el, i) => { el.style.order = cssOrder[i]; });
 }
 
 function reorderRack(fromIdx, toIdx) {
