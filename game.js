@@ -549,19 +549,27 @@ function onRackTileClick(idx) {
 function onCellClick(r, c) {
   if (!state.playerTurnActive) return;
 
-  // Must have a tile selected from rack
+  const cellEmpty = state.board[r][c] === null &&
+                    !state.pending.some(p => p.row === r && p.col === c);
+
+  // If there are pending tiles, move the last-placed one to the clicked cell.
+  if (state.pending.length > 0 && cellEmpty) {
+    const last = state.pending[state.pending.length - 1];
+    last.row = r;
+    last.col = c;
+    renderBoard();
+    updateScoreBubble();
+    return;
+  }
+
+  // Otherwise place the selected rack tile on the clicked cell.
   if (state.selectedRackIdx === null) return;
-  // Cell must be empty
-  if (state.board[r][c] !== null) return;
-  if (state.pending.some(p => p.row === r && p.col === c)) return;
+  if (!cellEmpty) return;
 
   const tile = state.playerRack[state.selectedRackIdx];
 
   if (tile.isBlank) {
-    // Ask which letter
-    showBlankDialog((letter) => {
-      placeOnBoard(r, c, tile, letter);
-    });
+    showBlankDialog((letter) => { placeOnBoard(r, c, tile, letter); });
   } else {
     placeOnBoard(r, c, tile, tile.letter);
   }
