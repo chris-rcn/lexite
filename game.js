@@ -552,8 +552,8 @@ function onCellClick(r, c) {
   const cellEmpty = state.board[r][c] === null &&
                     !state.pending.some(p => p.row === r && p.col === c);
 
-  // If there are pending tiles, move the last-placed one to the clicked cell.
-  if (state.pending.length > 0 && cellEmpty) {
+  // If there are pending tiles and no rack tile selected, move the last-placed one to the clicked cell.
+  if (state.pending.length > 0 && state.selectedRackIdx === null && cellEmpty) {
     const last = state.pending[state.pending.length - 1];
     last.row = r;
     last.col = c;
