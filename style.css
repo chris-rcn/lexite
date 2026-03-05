@@ -673,13 +673,14 @@ main {
   pointer-events: none;
   box-shadow: 0 3px 12px rgba(0,0,0,0.35);
   white-space: nowrap;
+  opacity: 0.75;
   animation: bubble-pop 0.15s ease-out forwards;
 }
 #score-bubble.hidden { display: none; }
 
 @keyframes bubble-pop {
   from { opacity: 0; transform: translateX(-50%) scale(0.65); }
-  to   { opacity: 1; transform: translateX(-50%) scale(1); }
+  to   { opacity: 0.75; transform: translateX(-50%) scale(1); }
 }
 
 #build-stamp {
