@@ -978,11 +978,10 @@ function updateScoreBubble() {
   const target = bestBubbleCell();
   const cellEl = getCellEl(target.row, target.col);
   const rect = cellEl.getBoundingClientRect();
-  const aboveTop = rect.top - 36;
 
   bubble.textContent = `+${score}`;
-  bubble.style.left = (rect.left + rect.width / 2) + 'px';
-  bubble.style.top  = (aboveTop > 4 ? aboveTop : rect.bottom + 6) + 'px';
+  bubble.style.left = (rect.left + rect.width  / 2) + 'px';
+  bubble.style.top  = (rect.top  + rect.height / 2) + 'px';
 
   // Re-trigger pop animation on each update.
   bubble.classList.add('hidden');
