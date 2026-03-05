@@ -931,8 +931,13 @@ function bestBubbleCell() {
     return state.board[r][c] !== null || pendingSet.has(`${r},${c}`);
   }
 
+  // Centroid of pending tiles — used to break ties in favour of the cell
+  // nearest the middle of the word rather than an endpoint.
+  const cr = pending.reduce((s, p) => s + p.row, 0) / pending.length;
+  const cc = pending.reduce((s, p) => s + p.col, 0) / pending.length;
+
   let best = null;
-  let bestNeighbors = Infinity;
+  let bestScore = Infinity;
 
   for (const p of pending) {
     for (const [dr, dc] of dirs) {
@@ -940,8 +945,10 @@ function bestBubbleCell() {
       const c = p.col + dc;
       if (occupied(r, c)) continue;           // must be empty (criterion B)
       const n = dirs.filter(([dr2,dc2]) => occupied(r+dr2, c+dc2)).length;
-      if (n < bestNeighbors) {
-        bestNeighbors = n;
+      const dist = Math.abs(r - cr) + Math.abs(c - cc);
+      const score = n * 100 + dist;           // fewest neighbours first, then closest to centroid
+      if (score < bestScore) {
+        bestScore = score;
         best = { row: r, col: c };
       }
     }
