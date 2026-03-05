@@ -276,12 +276,13 @@ function onTouchTileStart(e, idx) {
   });
 
   // Clean up any leftover state from an interrupted drag.
-  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl = null; }
+  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl.style.pointerEvents = ''; touchSourceEl = null; }
   if (touchGhost)    { touchGhost.remove(); touchGhost = null; }
 
   // Hide the source tile so only the ghost is visible.
   touchSourceEl = e.currentTarget;
   touchSourceEl.style.opacity = '0';
+  touchSourceEl.style.pointerEvents = 'none';
 
   const touch = e.touches[0];
 
@@ -336,16 +337,11 @@ function onTouchDragMove(e) {
     if (targetCell) targetCell.classList.add('drag-over');
   }
 
-  if (targetRackTile !== touchLastRackTile) {
+  if (targetRackTile !== null && targetRackTile !== touchLastRackTile) {
     touchLastRackTile = targetRackTile;
-    if (targetRackTile) {
-      const rackTiles = Array.from(document.querySelectorAll('#rack .rack-tile'));
-      dragRackPreviewIdx = rackTiles.indexOf(targetRackTile);
-      updateRackOrder(state.dragRackIdx, dragRackPreviewIdx);
-    } else {
-      dragRackPreviewIdx = null;
-      document.querySelectorAll('#rack .rack-tile').forEach(t => t.style.order = '');
-    }
+    const rackTiles = Array.from(document.querySelectorAll('#rack .rack-tile'));
+    dragRackPreviewIdx = rackTiles.indexOf(targetRackTile);
+    updateRackOrder(state.dragRackIdx, dragRackPreviewIdx);
   }
 
   positionGhost(touch.clientX, touch.clientY, targetCell);
@@ -360,7 +356,7 @@ function onTouchDragEnd(e) {
   touchLastRackTile = null;
   document.querySelectorAll('#rack .rack-tile').forEach(t => t.style.order = '');
   if (touchGhost)    { touchGhost.remove(); touchGhost = null; }
-  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl = null; }
+  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl.style.pointerEvents = ''; touchSourceEl = null; }
 
   const fromIdx = state.dragRackIdx;
   const toIdx   = dragRackPreviewIdx;
@@ -411,10 +407,11 @@ function renderRack() {
       dragImg.style.left = '-9999px';
       document.body.appendChild(dragImg);
       e.dataTransfer.setDragImage(dragImg, el.offsetWidth / 2, el.offsetHeight / 2);
-      requestAnimationFrame(() => { dragImg.remove(); el.style.opacity = '0'; });
+      requestAnimationFrame(() => { dragImg.remove(); el.style.opacity = '0'; el.style.pointerEvents = 'none'; });
     });
     el.addEventListener('dragend', () => {
       el.style.opacity = '';
+      el.style.pointerEvents = '';
       document.querySelectorAll('#rack .rack-tile').forEach(t => t.style.order = '');
       state.dragRackIdx = null;
       dragRackPreviewIdx = null;
