@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lexite - Word Game</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 
   <header>
     <div id="header-left">
-      <h1>LEXITE</h1>
+      <h1>Lexite</h1>
     </div>
     <div id="scoreboard">
       <div class="score-block">
@@ -37,7 +37,7 @@
 
     <aside id="sidebar">
       <div id="bag-info">
-        <span id="bag-info-text">107 unseen (100 in bag)</span>
+        <span id="bag-info-unseen">107 unseen tiles</span><span id="bag-info-bag"> (100 in bag)</span>
       </div>
 
       <div id="rack-section">
@@ -47,9 +47,9 @@
       </div>
 
       <div id="action-buttons">
-        <button id="btn-pass" class="btn-secondary">Pass</button>
-        <button id="btn-recall">Recall</button>
-        <button id="btn-shuffle">Shuffle</button>
+        <button id="btn-lifeline">Play Lifeline</button>
+        <button id="btn-recall">Recall Tiles</button>
+        <button id="btn-shuffle">Shuffle Rack</button>
         <button id="btn-play" class="btn-primary">Play Word</button>
       </div>
 
@@ -89,6 +89,19 @@
     </div>
   </div>
 
+  <!-- Live score preview bubble -->
+  <div id="score-bubble" class="hidden"></div>
+
   <script src="game.js"></script>
+  <footer id="build-stamp"></footer>
+  <script>
+    var d = new Date(document.lastModified);
+    document.getElementById('build-stamp').textContent =
+      'built ' + d.getUTCFullYear() + '-' +
+      String(d.getUTCMonth()+1).padStart(2,'0') + '-' +
+      String(d.getUTCDate()).padStart(2,'0') + ' ' +
+      String(d.getUTCHours()).padStart(2,'0') + ':' +
+      String(d.getUTCMinutes()).padStart(2,'0') + ' UTC';
+  </script>
 </body>
 </html>

@@ -56,6 +56,7 @@ const state = {
   // Tiles the player has placed this turn (not yet committed)
   pending: [],  // [{row, col, letter, isBlank, displayLetter}]
   selectedRackIdx: null,
+  dragRackIdx: null,
   wordSet: null,
   gameOver: false,
   consecutivePasses: 0,
@@ -72,12 +73,13 @@ async function init() {
   buildBlankLetterGrid();
   document.getElementById('btn-new-game').addEventListener('click', newGame);
   document.getElementById('btn-shuffle').addEventListener('click', shufflePlayerRack);
+  document.getElementById('btn-lifeline').addEventListener('click', lifelineTurn);
   document.getElementById('btn-recall').addEventListener('click', recallAllTiles);
   document.getElementById('btn-play').addEventListener('click', submitPlayerMove);
-  document.getElementById('btn-pass').addEventListener('click', passPlayerTurn);
   document.getElementById('blank-cancel').addEventListener('click', cancelBlankDialog);
-  document.getElementById('bag-info').addEventListener('click', showUnseenDialog);
+  document.getElementById('bag-info-unseen').addEventListener('click', showUnseenDialog);
   document.getElementById('unseen-close').addEventListener('click', closeUnseenDialog);
+  scoreBubbleEl = document.getElementById('score-bubble');
   document.getElementById('unseen-overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('unseen-overlay')) closeUnseenDialog();
   });
@@ -118,9 +120,11 @@ function newGame() {
   state.isFirstMove = true;
   state.pending = [];
   state.selectedRackIdx = null;
+  state.dragRackIdx = null;
   state.gameOver = false;
   state.consecutivePasses = 0;
   state.lastPlay = new Set();
+  state.lifelineUsed = false;
   state.playerTurnActive = true;
 
   drawTiles(state.playerRack, 7);
@@ -189,6 +193,18 @@ function buildBoardDOM() {
       }
 
       cell.addEventListener('click', () => onCellClick(r, c));
+      cell.addEventListener('dragover', (e) => {
+        if (state.dragRackIdx !== null) e.preventDefault();
+      });
+      cell.addEventListener('dragenter', (e) => {
+        if (state.dragRackIdx !== null) { e.preventDefault(); cell.classList.add('drag-over'); }
+      });
+      cell.addEventListener('dragleave', () => { cell.classList.remove('drag-over'); });
+      cell.addEventListener('drop', (e) => {
+        e.preventDefault();
+        cell.classList.remove('drag-over');
+        onCellDrop(r, c);
+      });
       boardEl.appendChild(cell);
     }
   }
@@ -237,6 +253,135 @@ function makeTileEl(letter, isBlank, pending, lastPlay = false) {
 }
 
 // ============================================================
+// TOUCH DRAG (iOS Safari fallback)
+// ============================================================
+
+const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+let touchGhost        = null;
+let touchLastCell     = null;
+let touchLastRackTile = null;
+let touchSourceEl     = null;
+let dragRackPreviewIdx = null;
+let scoreBubbleEl  = null; // cached after DOM ready
+
+function onTouchTileStart(e, idx) {
+  if (!state.playerTurnActive) return;
+  e.preventDefault();
+
+  state.dragRackIdx = idx;
+  state.selectedRackIdx = idx;
+  document.querySelectorAll('#rack .rack-tile').forEach((el, i) => {
+    el.classList.toggle('selected', i === idx);
+  });
+
+  // Clean up any leftover state from an interrupted drag.
+  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl.style.pointerEvents = ''; touchSourceEl = null; }
+  if (touchGhost)    { touchGhost.remove(); touchGhost = null; }
+
+  // Hide the source tile so only the ghost is visible.
+  touchSourceEl = e.currentTarget;
+  touchSourceEl.style.opacity = '0';
+  touchSourceEl.style.pointerEvents = 'none';
+
+  const touch = e.touches[0];
+
+  // Clone the source tile — guarantees identical rendering without relying on
+  // CSS variable resolution for a dynamically-appended element.
+  // Reset inline styles that were set on the source so the ghost is visible.
+  touchGhost = touchSourceEl.cloneNode(true);
+  touchGhost.style.opacity = '';
+  touchGhost.style.pointerEvents = '';
+  touchGhost.classList.add('touch-drag-ghost');
+  positionGhost(touch.clientX, touch.clientY);
+  document.body.appendChild(touchGhost);
+
+  document.addEventListener('touchmove', onTouchDragMove, { passive: false });
+  document.addEventListener('touchend', onTouchDragEnd, { passive: false });
+  document.addEventListener('touchcancel', onTouchDragEnd, { passive: false });
+}
+
+function positionGhost(x, y, cellEl) {
+  const w = touchGhost.offsetWidth  || 48;
+  const h = touchGhost.offsetHeight || 52;
+  if (cellEl) {
+    const rect = cellEl.getBoundingClientRect();
+    touchGhost.style.transform = 'scale(1.5)';
+    touchGhost.style.left = (rect.left + rect.width  / 2 - w / 2) + 'px';
+    touchGhost.style.top  = (rect.top  + rect.height / 2 - h / 2) + 'px';
+  } else {
+    touchGhost.style.transform = 'scale(1.15)';
+    touchGhost.style.left = (x - w / 2) + 'px';
+    touchGhost.style.top  = (y - h / 2) + 'px';
+  }
+}
+
+function onTouchDragMove(e) {
+  e.preventDefault();
+  const touch = e.touches[0];
+
+  // pointer-events:none is set but some iOS versions still hit the ghost,
+  // so temporarily move it off-screen for the hit-test
+  const savedLeft = touchGhost.style.left;
+  const savedTop  = touchGhost.style.top;
+  touchGhost.style.left = '-9999px';
+  const el = document.elementFromPoint(touch.clientX, touch.clientY);
+  touchGhost.style.left = savedLeft;
+
+  const cell = el && el.closest('.cell');
+  const targetCell = (cell && !cell.classList.contains('has-tile')) ? cell : null;
+
+  const rackTile = !cell && el && el.closest('.rack-tile');
+  const targetRackTile = (rackTile && rackTile !== touchSourceEl) ? rackTile : null;
+
+  if (targetCell !== touchLastCell) {
+    if (touchLastCell) touchLastCell.classList.remove('drag-over');
+    touchLastCell = targetCell;
+    if (targetCell) targetCell.classList.add('drag-over');
+  }
+
+  if (targetRackTile !== null && targetRackTile !== touchLastRackTile) {
+    touchLastRackTile = targetRackTile;
+    const rackTiles = Array.from(document.querySelectorAll('#rack .rack-tile'));
+    dragRackPreviewIdx = rackTiles.indexOf(targetRackTile);
+    updateRackOrder(state.dragRackIdx, dragRackPreviewIdx);
+  }
+
+  positionGhost(touch.clientX, touch.clientY, targetCell);
+}
+
+function onTouchDragEnd(e) {
+  document.removeEventListener('touchmove', onTouchDragMove);
+  document.removeEventListener('touchend', onTouchDragEnd);
+  document.removeEventListener('touchcancel', onTouchDragEnd);
+
+  if (touchLastCell) { touchLastCell.classList.remove('drag-over'); touchLastCell = null; }
+  touchLastRackTile = null;
+  document.querySelectorAll('#rack .rack-tile').forEach(t => t.style.order = '');
+  if (touchGhost)    { touchGhost.remove(); touchGhost = null; }
+  if (touchSourceEl) { touchSourceEl.style.opacity = ''; touchSourceEl.style.pointerEvents = ''; touchSourceEl = null; }
+
+  const fromIdx = state.dragRackIdx;
+  const toIdx   = dragRackPreviewIdx;
+  dragRackPreviewIdx = null;
+
+  if (e.type === 'touchend' && e.changedTouches.length) {
+    const touch = e.changedTouches[0];
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    const cell = el && el.closest('.cell');
+    if (cell) {
+      const r = parseInt(cell.dataset.row);
+      const c = parseInt(cell.dataset.col);
+      onCellDrop(r, c);
+    } else if (fromIdx !== null && toIdx !== null && toIdx !== fromIdx) {
+      reorderRack(fromIdx, toIdx);
+    }
+  }
+
+  state.dragRackIdx = null;
+}
+
+// ============================================================
 // RACK RENDERING
 // ============================================================
 
@@ -252,9 +397,68 @@ function renderRack() {
     pts.className = 'tile-points';
     pts.textContent = tile.isBlank ? '' : (LETTER_VALUES[tile.letter] || 0);
     el.appendChild(pts);
+    if (!isTouchDevice) el.setAttribute('draggable', 'true');
+    el.addEventListener('dragstart', (e) => {
+      if (!state.playerTurnActive) { e.preventDefault(); return; }
+      state.dragRackIdx = idx;
+      state.selectedRackIdx = idx;
+      e.dataTransfer.effectAllowed = 'move';
+      // Use a clone as the drag image so the browser renders the full tile
+      // instead of a platform-default outline/ghost.
+      const dragImg = el.cloneNode(true);
+      dragImg.style.position = 'fixed';
+      dragImg.style.top = '-9999px';
+      dragImg.style.left = '-9999px';
+      document.body.appendChild(dragImg);
+      e.dataTransfer.setDragImage(dragImg, el.offsetWidth / 2, el.offsetHeight / 2);
+      requestAnimationFrame(() => { dragImg.remove(); el.style.opacity = '0'; });
+    });
+    el.addEventListener('dragend', () => {
+      el.style.opacity = '';
+      document.querySelectorAll('#rack .rack-tile').forEach(t => t.style.order = '');
+      state.dragRackIdx = null;
+      dragRackPreviewIdx = null;
+    });
+    el.addEventListener('dragover', (e) => { if (state.dragRackIdx !== null) e.preventDefault(); });
+    el.addEventListener('dragenter', (e) => {
+      if (state.dragRackIdx !== null && idx !== state.dragRackIdx) {
+        e.preventDefault();
+        dragRackPreviewIdx = idx;
+        updateRackOrder(state.dragRackIdx, idx);
+      }
+    });
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const from = state.dragRackIdx;
+      const to = dragRackPreviewIdx;
+      state.dragRackIdx = null;
+      dragRackPreviewIdx = null;
+      if (from !== null && to !== null && from !== to) reorderRack(from, to);
+    });
+    el.addEventListener('touchstart', (e) => onTouchTileStart(e, idx), { passive: false });
     el.addEventListener('click', () => onRackTileClick(idx));
     rackEl.appendChild(el);
   });
+}
+
+function updateRackOrder(fromIdx, toIdx) {
+  const tiles = Array.from(document.querySelectorAll('#rack .rack-tile'));
+  const n = tiles.length;
+  // Compute display positions as if tile at fromIdx is inserted at toIdx
+  const dispOrder = Array.from({length: n}, (_, i) => i);
+  dispOrder.splice(fromIdx, 1);
+  dispOrder.splice(toIdx, 0, fromIdx);
+  // dispOrder[displayPos] = origIdx; invert to cssOrder[origIdx] = displayPos
+  const cssOrder = new Array(n);
+  dispOrder.forEach((origIdx, dispPos) => { cssOrder[origIdx] = dispPos; });
+  tiles.forEach((el, i) => { el.style.order = cssOrder[i]; });
+}
+
+function reorderRack(fromIdx, toIdx) {
+  const [tile] = state.playerRack.splice(fromIdx, 1);
+  state.playerRack.splice(toIdx, 0, tile);
+  if (state.selectedRackIdx === fromIdx) state.selectedRackIdx = toIdx;
+  renderRack();
 }
 
 // ============================================================
@@ -269,7 +473,8 @@ function renderScores() {
 function updateBagCount() {
   const bagLen = state.bag.length;
   const unseen = bagLen + state.computerRack.length;
-  document.getElementById('bag-info-text').textContent = `${unseen} unseen (${bagLen} in bag)`;
+  document.getElementById('bag-info-unseen').textContent = `${unseen} unseen tiles`;
+  document.getElementById('bag-info-bag').textContent = ` (${bagLen} in bag)`;
 }
 
 function showUnseenDialog() {
@@ -326,7 +531,7 @@ function logEntry(msg, cls) {
 function enablePlayerControls(on) {
   state.playerTurnActive = on;
   document.getElementById('btn-play').disabled = !on;
-  document.getElementById('btn-pass').disabled = !on;
+  document.getElementById('btn-lifeline').disabled = !on || state.lifelineUsed;
   document.getElementById('btn-shuffle').disabled = !on;
   document.getElementById('btn-recall').disabled = !on;
 }
@@ -337,36 +542,48 @@ function enablePlayerControls(on) {
 
 function onRackTileClick(idx) {
   if (!state.playerTurnActive) return;
-  if (state.selectedRackIdx === idx) {
-    state.selectedRackIdx = null;
-  } else {
-    state.selectedRackIdx = idx;
-  }
+  state.selectedRackIdx = idx;
   renderRack();
 }
 
 function onCellClick(r, c) {
   if (!state.playerTurnActive) return;
 
-  // Clicking a pending tile recalls it
-  const pendingIdx = state.pending.findIndex(p => p.row === r && p.col === c);
-  if (pendingIdx !== -1) {
-    recallTile(pendingIdx);
+  const cellEmpty = state.board[r][c] === null &&
+                    !state.pending.some(p => p.row === r && p.col === c);
+
+  // If there are pending tiles and no rack tile selected, move the last-placed one to the clicked cell.
+  if (state.pending.length > 0 && state.selectedRackIdx === null && cellEmpty) {
+    const last = state.pending[state.pending.length - 1];
+    last.row = r;
+    last.col = c;
+    renderBoard();
+    updateScoreBubble();
     return;
   }
 
-  // Must have a tile selected from rack
+  // Otherwise place the selected rack tile on the clicked cell.
   if (state.selectedRackIdx === null) return;
-  // Cell must be empty
-  if (state.board[r][c] !== null) return;
+  if (!cellEmpty) return;
 
   const tile = state.playerRack[state.selectedRackIdx];
 
   if (tile.isBlank) {
-    // Ask which letter
-    showBlankDialog((letter) => {
-      placeOnBoard(r, c, tile, letter);
-    });
+    showBlankDialog((letter) => { placeOnBoard(r, c, tile, letter); });
+  } else {
+    placeOnBoard(r, c, tile, tile.letter);
+  }
+}
+
+function onCellDrop(r, c) {
+  if (!state.playerTurnActive) return;
+  if (state.dragRackIdx === null) return;
+  if (state.board[r][c] !== null) return;
+  if (state.pending.some(p => p.row === r && p.col === c)) return;
+
+  const tile = state.playerRack[state.dragRackIdx];
+  if (tile.isBlank) {
+    showBlankDialog((letter) => { placeOnBoard(r, c, tile, letter); });
   } else {
     placeOnBoard(r, c, tile, tile.letter);
   }
@@ -383,13 +600,7 @@ function placeOnBoard(r, c, tile, letter) {
   });
   renderRack();
   renderBoard();
-}
-
-function recallTile(idx) {
-  const p = state.pending.splice(idx, 1)[0];
-  state.playerRack.push({ letter: p.isBlank ? '?' : p.letter, isBlank: p.isBlank });
-  renderRack();
-  renderBoard();
+  updateScoreBubble();
 }
 
 function recallAllTiles() {
@@ -400,6 +611,7 @@ function recallAllTiles() {
   state.selectedRackIdx = null;
   renderRack();
   renderBoard();
+  updateScoreBubble();
 }
 
 function shufflePlayerRack() {
@@ -703,11 +915,91 @@ function scorePlacement(pending, isHorizMove) {
 }
 
 // ============================================================
+// SCORE BUBBLE
+// ============================================================
+
+// Return the empty cell that is the best place to float the score bubble.
+// Criteria (in order): adjacent to a pending tile, not on top of a tile,
+// fewest occupied neighbours.
+function bestBubbleCell() {
+  const pending = state.pending;
+  const pendingSet = new Set(pending.map(p => `${p.row},${p.col}`));
+  const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+
+  function occupied(r, c) {
+    if (r < 0 || r >= 15 || c < 0 || c >= 15) return true;
+    return state.board[r][c] !== null || pendingSet.has(`${r},${c}`);
+  }
+
+  // Centroid of pending tiles — used to break ties in favour of the cell
+  // nearest the middle of the word rather than an endpoint.
+  const cr = pending.reduce((s, p) => s + p.row, 0) / pending.length;
+  const cc = pending.reduce((s, p) => s + p.col, 0) / pending.length;
+
+  let best = null;
+  let bestScore = Infinity;
+
+  for (const p of pending) {
+    for (const [dr, dc] of dirs) {
+      const r = p.row + dr;
+      const c = p.col + dc;
+      if (occupied(r, c)) continue;           // must be empty (criterion B)
+      const n = dirs.filter(([dr2,dc2]) => occupied(r+dr2, c+dc2)).length;
+      const dist = Math.abs(r - cr) + Math.abs(c - cc);
+      const score = n * 100 + dist;           // fewest neighbours first, then closest to centroid
+      if (score < bestScore) {
+        bestScore = score;
+        best = { row: r, col: c };
+      }
+    }
+  }
+
+  // Fallback: last placed tile (bubble overlaps it, but better than nothing).
+  return best ?? pending[pending.length - 1];
+}
+
+function updateScoreBubble() {
+  const bubble = scoreBubbleEl;
+  const pending = state.pending;
+
+  if (!pending.length) {
+    bubble.classList.add('hidden');
+    return;
+  }
+
+  const result = validatePlayerMove();
+  if (!result.valid) {
+    bubble.classList.add('hidden');
+    return;
+  }
+
+  const score = scorePlacement(pending, result.dir);
+
+  const target = bestBubbleCell();
+  const cellEl = getCellEl(target.row, target.col);
+  const rect = cellEl.getBoundingClientRect();
+
+  bubble.textContent = `+${score}`;
+  bubble.style.left = (rect.left + rect.width  / 2) + 'px';
+  bubble.style.top  = (rect.top  + rect.height / 2) + 'px';
+
+  // Re-trigger pop animation on each update.
+  bubble.classList.add('hidden');
+  bubble.offsetWidth; // force reflow
+  bubble.classList.remove('hidden');
+}
+
+// ============================================================
 // PLAYER TURN
 // ============================================================
 
 function submitPlayerMove() {
   if (!state.playerTurnActive || state.gameOver) return;
+
+  if (state.pending.length === 0) {
+    if (confirm('You have no tiles placed. Pass your turn?')) passPlayerTurn();
+    return;
+  }
 
   const result = validatePlayerMove();
   if (!result.valid) {
@@ -735,6 +1027,7 @@ function submitPlayerMove() {
   renderRack();
   renderScores();
   updateBagCount();
+  updateScoreBubble();
 
   if (checkGameOver()) return;
 
@@ -750,6 +1043,64 @@ function passPlayerTurn() {
   logEntry('You: passed', 'player');
   if (checkGameOver()) return;
   enablePlayerControls(false);
+  state.turn = 'computer';
+  setTimeout(computerTurn, 300);
+}
+
+async function findBestPlayerMove() {
+  let bestScore = -1;
+  let bestMove = null;
+  for (let i = 0; i < 15; i++) {
+    if (i % 3 === 0) await yieldToUI();
+    for (const isHoriz of [true, false]) {
+      const moves = findMovesInLine(i, isHoriz, state.playerRack);
+      for (const m of moves) {
+        if (m.score > bestScore) { bestScore = m.score; bestMove = m; }
+      }
+    }
+  }
+  return bestScore > 0 ? bestMove : null;
+}
+
+async function lifelineTurn() {
+  if (!state.playerTurnActive || state.gameOver || state.lifelineUsed) return;
+  state.lifelineUsed = true;
+  document.getElementById('btn-lifeline').disabled = true;
+  recallAllTiles();
+  enablePlayerControls(false);
+
+  const t0 = performance.now();
+  const move = await findBestPlayerMove();
+  const ms = Math.round(performance.now() - t0);
+
+  if (!move) {
+    state.consecutivePasses++;
+    logEntry(`You: passed in ${ms}ms [lifeline]`, 'player');
+    if (checkGameOver()) return;
+  } else {
+    state.lastPlay = new Set();
+    for (const p of move.placements) {
+      state.board[p.row][p.col] = { letter: p.letter, isBlank: p.isBlank, displayLetter: p.letter };
+      state.lastPlay.add(`${p.row},${p.col}`);
+    }
+    state.playerScore += move.score;
+    state.consecutivePasses = 0;
+    state.isFirstMove = false;
+    for (const p of move.placements) {
+      const idx = state.playerRack.findIndex(t =>
+        p.isBlank ? t.isBlank : (t.letter.toLowerCase() === p.letter.toLowerCase() && !t.isBlank)
+      );
+      if (idx !== -1) state.playerRack.splice(idx, 1);
+    }
+    drawTiles(state.playerRack, 7 - state.playerRack.length);
+    logEntry(`You: ${move.word.toUpperCase()} (+${move.score}) in ${ms}ms [lifeline]`, 'player');
+    renderRack();
+    renderBoard();
+    renderScores();
+    updateBagCount();
+    if (checkGameOver()) return;
+  }
+
   state.turn = 'computer';
   setTimeout(computerTurn, 300);
 }
@@ -834,9 +1185,8 @@ async function findBestComputerMove() {
   return bestScore > 0 ? bestMove : null;
 }
 
-function findMovesInLine(lineIdx, isHoriz) {
+function findMovesInLine(lineIdx, isHoriz, rack = state.computerRack) {
   const results = [];
-  const rack = state.computerRack;
 
   // Build fixed letter array for this line
   const fixed = new Array(15).fill(null);
