@@ -397,7 +397,7 @@ function renderRack() {
     pts.className = 'tile-points';
     pts.textContent = tile.isBlank ? '' : (LETTER_VALUES[tile.letter] || 0);
     el.appendChild(pts);
-    if (!isTouchDevice) el.setAttribute('draggable', 'true');
+    el.setAttribute('draggable', 'true');
     el.addEventListener('dragstart', (e) => {
       if (!state.playerTurnActive) { e.preventDefault(); return; }
       state.dragRackIdx = idx;
