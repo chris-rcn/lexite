@@ -144,6 +144,7 @@ main {
 
 #board-container {
   flex-shrink: 0;
+  position: relative; /* anchor for the score bubble */
 }
 
 #board {
@@ -652,10 +653,12 @@ main {
   }
 }
 
-/* Score preview bubble */
+/* Score preview bubble — positioned relative to the board container so it
+   stays glued to its cell when the page scrolls. Keep z-index below the
+   dialog overlays (z 100+). */
 #score-bubble {
-  position: fixed;
-  z-index: 600;
+  position: absolute;
+  z-index: 50;
   background: #27ae60;
   color: #fff;
   font-weight: 800;

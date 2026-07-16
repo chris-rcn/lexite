@@ -85,6 +85,10 @@ async function init() {
   document.getElementById('bag-info-unseen').addEventListener('click', showUnseenDialog);
   document.getElementById('unseen-close').addEventListener('click', closeUnseenDialog);
   scoreBubbleEl = document.getElementById('score-bubble');
+  // Board size depends on the viewport, so re-anchor the bubble on resize.
+  window.addEventListener('resize', () => {
+    if (state.pending.length > 0) updateScoreBubble();
+  });
   document.getElementById('unseen-overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('unseen-overlay')) closeUnseenDialog();
   });
@@ -983,10 +987,13 @@ function updateScoreBubble() {
   const target = bestBubbleCell();
   const cellEl = getCellEl(target.row, target.col);
   const rect = cellEl.getBoundingClientRect();
+  // Position relative to the board container (the bubble's offset parent)
+  // so the bubble tracks the board when the page scrolls.
+  const contRect = document.getElementById('board-container').getBoundingClientRect();
 
   bubble.textContent = `+${score}`;
-  bubble.style.left = (rect.left + rect.width  / 2) + 'px';
-  bubble.style.top  = (rect.top  + rect.height / 2) + 'px';
+  bubble.style.left = (rect.left - contRect.left + rect.width  / 2) + 'px';
+  bubble.style.top  = (rect.top  - contRect.top  + rect.height / 2) + 'px';
 
   // Re-trigger pop animation on each update.
   bubble.classList.add('hidden');
