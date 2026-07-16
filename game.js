@@ -58,7 +58,7 @@ const state = {
   selectedRackIdx: null,
   dragRackIdx: null,
   wordSet: null,
-  wordsByLength: null, // wordsByLength[n] = array of all n-letter words (2..15)
+  trie: null, // typed-array packed dictionary trie (built by ensureTrie)
   gameOver: false,
   consecutivePasses: 0,
   lifelineUsed: false,
@@ -113,11 +113,7 @@ async function loadWordList() {
   state.wordSet = new Set(
     text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2)
   );
-  // Index by length so the move engine only scans words that can fit.
-  state.wordsByLength = Array.from({length: 16}, () => []);
-  for (const word of state.wordSet) {
-    if (word.length <= 15) state.wordsByLength[word.length].push(word);
-  }
+  ensureTrie();
 }
 
 function showLoadError(err) {
@@ -1169,11 +1165,104 @@ function yieldToUI() {
 }
 
 // ============================================================
+// DICTIONARY TRIE
+// ============================================================
+
+// The dictionary is packed into typed arrays: node n's children are the
+// edges childStart[n] .. childStart[n]+childCount[n]-1, each edge holding
+// a letter code (0-25) and a target node. This keeps ~400k nodes in a few
+// MB and makes traversal allocation-free.
+function ensureTrie() {
+  if (state.trie && state.trie.wordCount === state.wordSet.size) return;
+
+  const words = [];
+  for (const w of state.wordSet) {
+    if (w.length <= 15 && /^[a-z]+$/.test(w)) words.push(w);
+  }
+  words.sort();
+
+  // Sorted insertion reaches nodes in depth-first order, so each node's
+  // children are complete — and can be copied to the edge arrays — the
+  // moment the insertion path leaves it. No intermediate object trie.
+  const terminal = [0], childStart = [0], childCount = [0];
+  const edgeChar = [], edgeNode = [];
+  const stack = [{ node: 0, kids: [] }]; // kids: flat [code, node, ...]
+  const finalize = f => {
+    childStart[f.node] = edgeChar.length;
+    childCount[f.node] = f.kids.length / 2;
+    for (let k = 0; k < f.kids.length; k += 2) {
+      edgeChar.push(f.kids[k]);
+      edgeNode.push(f.kids[k + 1]);
+    }
+  };
+  let prev = '';
+  for (const w of words) {
+    let common = 0;
+    while (common < prev.length && common < w.length &&
+           w.charCodeAt(common) === prev.charCodeAt(common)) common++;
+    while (stack.length - 1 > common) finalize(stack.pop());
+    for (let i = common; i < w.length; i++) {
+      terminal.push(0); childStart.push(0); childCount.push(0);
+      const n = terminal.length - 1;
+      stack[stack.length - 1].kids.push(w.charCodeAt(i) - 97, n);
+      stack.push({ node: n, kids: [] });
+    }
+    terminal[stack[stack.length - 1].node] = 1;
+    prev = w;
+  }
+  while (stack.length > 0) finalize(stack.pop());
+
+  state.trie = {
+    terminal: Uint8Array.from(terminal),
+    childStart: Int32Array.from(childStart),
+    childCount: Uint8Array.from(childCount),
+    edgeChar: Uint8Array.from(edgeChar),
+    edgeNode: Int32Array.from(edgeNode),
+    wordCount: state.wordSet.size,
+  };
+}
+
+function trieChild(trie, node, code) {
+  let i = trie.childStart[node];
+  const end = i + trie.childCount[node];
+  for (; i < end; i++) {
+    if (trie.edgeChar[i] === code) return trie.edgeNode[i];
+  }
+  return -1;
+}
+
+const ALL_LETTERS_MASK = (1 << 26) - 1;
+
+// Bitmask of letters that form a valid perpendicular word at (r, c), or
+// every letter if the cell has no perpendicular neighbors.
+function computeCrossMask(r, c, moveIsHoriz) {
+  let prefix = '', suffix = '';
+  if (moveIsHoriz) {
+    let k = r;
+    while (k > 0 && state.board[k - 1][c]) k--;
+    for (; k < r; k++) prefix += state.board[k][c].letter.toLowerCase();
+    for (k = r + 1; k < 15 && state.board[k][c]; k++) suffix += state.board[k][c].letter.toLowerCase();
+  } else {
+    let k = c;
+    while (k > 0 && state.board[r][k - 1]) k--;
+    for (; k < c; k++) prefix += state.board[r][k].letter.toLowerCase();
+    for (k = c + 1; k < 15 && state.board[r][k]; k++) suffix += state.board[r][k].letter.toLowerCase();
+  }
+  if (prefix === '' && suffix === '') return ALL_LETTERS_MASK;
+  let mask = 0;
+  for (let l = 0; l < 26; l++) {
+    if (state.wordSet.has(prefix + String.fromCharCode(97 + l) + suffix)) mask |= (1 << l);
+  }
+  return mask;
+}
+
+// ============================================================
 // COMPUTER MOVE ENGINE
 // ============================================================
 
 // Find the highest-scoring legal move for the given rack.
 async function findBestMove(rack) {
+  ensureTrie();
   let bestScore = -1;
   let bestMove = null;
 
@@ -1195,171 +1284,155 @@ async function findBestMove(rack) {
   return bestScore > 0 ? bestMove : null;
 }
 
+// Generate all legal moves in one line via the trie (Appel–Jacobson):
+// depth-first walks outward from each anchor square consume rack tiles and
+// prune the instant the dictionary cannot extend the prefix, so only
+// viable words are ever visited. Blanks are assigned greedily (real tile
+// first), matching the previous engine, and results are sorted by
+// (length, word, start) — the previous engine's scan order — so
+// findBestMove's first-strict-max selection picks the identical move.
 function findMovesInLine(lineIdx, isHoriz, rack) {
   const results = [];
-
-  // Build fixed letter array for this line
-  const fixed = new Array(15).fill(null);
-  for (let i = 0; i < 15; i++) {
-    const [r, c] = isHoriz ? [lineIdx, i] : [i, lineIdx];
-    if (state.board[r][c]) fixed[i] = state.board[r][c].letter.toLowerCase();
-  }
-
-  // Check if this line is worth searching
-  const hasAnchor = (() => {
-    for (let i = 0; i < 15; i++) {
-      if (fixed[i] !== null) continue;
-      const [r, c] = isHoriz ? [lineIdx, i] : [i, lineIdx];
-      if (state.isFirstMove && r === 7 && c === 7) return true;
-      if (!state.isFirstMove && isAdjacentToExisting(r, c)) return true;
-    }
-    return false;
-  })();
-
-  const hasFixed = fixed.some(f => f !== null);
-
-  if (!hasAnchor && !hasFixed) return results;
   if (state.isFirstMove && lineIdx !== 7) return results;
+  const trie = state.trie;
 
-  // Available rack letter counts
-  const rackCounts = {};
-  let blankCount = 0;
-  for (const tile of rack) {
-    if (tile.isBlank) { blankCount++; }
-    else { const ch = tile.letter.toLowerCase(); rackCounts[ch] = (rackCounts[ch]||0)+1; }
+  const idxRC = i => isHoriz ? [lineIdx, i] : [i, lineIdx];
+
+  // Fixed letters in this line as codes 0-25 (-1 = empty)
+  const fixed = new Int8Array(15).fill(-1);
+  for (let i = 0; i < 15; i++) {
+    const [r, c] = idxRC(i);
+    if (state.board[r][c]) fixed[i] = state.board[r][c].letter.toLowerCase().charCodeAt(0) - 97;
   }
 
-  // Available pool for pre-filter: rack + fixed in line
-  const allAvail = {...rackCounts};
-  let fixedCount = 0;
-  for (const f of fixed) if (f !== null) { allAvail[f] = (allAvail[f]||0)+1; fixedCount++; }
+  // Anchors: empty cells a move may build from. Every legal move places a
+  // new tile on at least one anchor, and is generated exactly once, from
+  // the leftmost anchor its new tiles cover.
+  const anchor = new Uint8Array(15);
+  const crossMask = new Int32Array(15).fill(ALL_LETTERS_MASK);
+  let anyAnchor = false;
+  for (let i = 0; i < 15; i++) {
+    if (fixed[i] !== -1) continue;
+    const [r, c] = idxRC(i);
+    if (state.isFirstMove ? (r === 7 && c === 7) : isAdjacentToExisting(r, c)) {
+      anchor[i] = 1;
+      anyAnchor = true;
+      crossMask[i] = computeCrossMask(r, c, isHoriz);
+    }
+  }
+  if (!anyAnchor) return results;
 
-  // Any placement covers at most fixedCount fixed cells, so a word longer
-  // than rack.length + fixedCount can never be spelled in this line.
-  const maxLen = Math.min(15, rack.length + fixedCount);
+  const counts = new Int32Array(26);
+  let blanks = 0;
+  for (const t of rack) {
+    if (t.isBlank) blanks++;
+    else counts[t.letter.toLowerCase().charCodeAt(0) - 97]++;
+  }
 
-  for (let wlen = 2; wlen <= maxLen; wlen++) {
-    for (const word of state.wordsByLength[wlen]) {
-      // Quick letter-count pre-filter
-      if (!canSpellFromPool(word, allAvail, blankCount)) continue;
+  // New-tile letters along the current DFS path, by line position
+  const placedChar = new Int8Array(15);
+  const placedBlank = new Uint8Array(15);
 
-      // Try each start position
-      for (let start = 0; start <= 15 - wlen; start++) {
-        const end = start + wlen - 1;
-
-        // Word must not abut another word (would extend it illegally)
-        if (start > 0 && fixed[start-1] !== null) continue;
-        if (end < 14 && fixed[end+1] !== null) continue;
-
-        // Match word against fixed tiles, compute rack tiles needed
-        let ok = true;
-        let usesFixed = false;
-        let hasAnchorTile = false;
-        const rackNeeded = []; // {char, pos-in-line}
-
-        for (let i = 0; i < wlen; i++) {
-          const pos = start + i;
-          const ch = word[i];
-          if (fixed[pos] !== null) {
-            if (fixed[pos] !== ch) { ok = false; break; }
-            usesFixed = true;
-          } else {
-            rackNeeded.push({char: ch, pos});
-            const [r, c] = isHoriz ? [lineIdx, pos] : [pos, lineIdx];
-            if (state.isFirstMove && r === 7 && c === 7) hasAnchorTile = true;
-            if (!state.isFirstMove && isAdjacentToExisting(r, c)) hasAnchorTile = true;
-          }
-        }
-
-        if (!ok) continue;
-        if (rackNeeded.length === 0) continue; // no new tiles placed
-        if (!usesFixed && !hasAnchorTile) continue; // not connected
-        if (state.isFirstMove) {
-          // Must include the center cell
-          let coversCenter = false;
-          for (let i = start; i <= end; i++) {
-            const [r, c] = isHoriz ? [lineIdx, i] : [i, lineIdx];
-            if (r === 7 && c === 7) { coversCenter = true; break; }
-          }
-          if (!coversCenter) continue;
-        }
-
-        // Verify rack can supply the needed letters
-        const rAvail = {...rackCounts};
-        let blanksLeft = blankCount;
-        const placements = [];
-        let rackOk = true;
-
-        for (const {char, pos} of rackNeeded) {
-          const [r, c] = isHoriz ? [lineIdx, pos] : [pos, lineIdx];
-          if (rAvail[char] > 0) {
-            rAvail[char]--;
-            placements.push({row:r, col:c, letter:char.toUpperCase(), isBlank:false});
-          } else if (blanksLeft > 0) {
-            blanksLeft--;
-            placements.push({row:r, col:c, letter:char.toUpperCase(), isBlank:true});
-          } else {
-            rackOk = false; break;
-          }
-        }
-        if (!rackOk) continue;
-
-        // Validate cross-words for each newly placed tile
-        let crossOk = true;
-        for (const p of placements) {
-          const cw = getCrossWordStr(p.row, p.col, p.letter.toLowerCase(), !isHoriz);
-          if (cw.length >= 2 && !state.wordSet.has(cw)) {
-            crossOk = false; break;
-          }
-        }
-        if (!crossOk) continue;
-
-        // Score this move
-        const score = scorePlacement(placements, isHoriz);
-        results.push({placements, word, score});
+  const record = (start, end) => {
+    let word = '';
+    const placements = [];
+    for (let i = start; i <= end; i++) {
+      const code = fixed[i] !== -1 ? fixed[i] : placedChar[i];
+      word += String.fromCharCode(97 + code);
+      if (fixed[i] === -1) {
+        const [r, c] = idxRC(i);
+        placements.push({ row: r, col: c, letter: String.fromCharCode(65 + code), isBlank: placedBlank[i] === 1 });
       }
     }
-  }
-
-  return results;
-}
-
-// Cross-word string through (row, col) in direction isHoriz,
-// treating (row, col) as having letter `newLetter` (not on board yet)
-function getCrossWordStr(row, col, newLetter, isHoriz) {
-  const getL = (r, c) => {
-    if (r === row && c === col) return newLetter;
-    const b = state.board[r][c];
-    return b ? b.letter.toLowerCase() : null;
+    results.push({ placements, word, score: scorePlacement(placements, isHoriz), start });
   };
-  let word = '';
-  if (isHoriz) {
-    let sc = col;
-    while (sc > 0 && getL(row, sc-1) !== null) sc--;
-    let cc = sc;
-    while (cc < 15 && getL(row, cc) !== null) { word += getL(row, cc); cc++; }
-  } else {
-    let sr = row;
-    while (sr > 0 && getL(sr-1, col) !== null) sr--;
-    let rr = sr;
-    while (rr < 15 && getL(rr, col) !== null) { word += getL(rr, col); rr++; }
-  }
-  return word;
-}
 
-// Quick pre-filter: can this word be spelled from the available pool?
-function canSpellFromPool(word, available, blanks) {
-  const need = {};
-  for (const ch of word) need[ch] = (need[ch]||0)+1;
-  let blanksUsed = 0;
-  for (const [ch, n] of Object.entries(need)) {
-    const deficit = n - (available[ch]||0);
-    if (deficit > 0) {
-      blanksUsed += deficit;
-      if (blanksUsed > blanks) return false;
+  // Extend rightward: letters wordStart..pos-1 are already consumed into
+  // `node`. A word is recorded when the dictionary marks it terminal, the
+  // walk has covered the anchor (guaranteeing >= 1 new tile and board
+  // connection), and the next cell is not fixed (no illegal extension).
+  function extendRight(pos, node, wordStart, anchorPos) {
+    const offBoard = pos >= 15;
+    if ((offBoard || fixed[pos] === -1) &&
+        pos > anchorPos && trie.terminal[node] === 1 && pos - wordStart >= 2) {
+      record(wordStart, pos - 1);
+    }
+    if (offBoard) return;
+
+    if (fixed[pos] !== -1) {
+      const next = trieChild(trie, node, fixed[pos]);
+      if (next !== -1) extendRight(pos + 1, next, wordStart, anchorPos);
+      return;
+    }
+    // Empty cell: try each rack-playable child the cross-check allows
+    const s = trie.childStart[node], e = s + trie.childCount[node];
+    for (let k = s; k < e; k++) {
+      const code = trie.edgeChar[k];
+      if ((crossMask[pos] & (1 << code)) === 0) continue;
+      let usedBlank;
+      if (counts[code] > 0) { counts[code]--; usedBlank = false; }
+      else if (blanks > 0) { blanks--; usedBlank = true; }
+      else continue;
+      placedChar[pos] = code;
+      placedBlank[pos] = usedBlank ? 1 : 0;
+      extendRight(pos + 1, trie.edgeNode[k], wordStart, anchorPos);
+      if (usedBlank) blanks++; else counts[code]++;
     }
   }
-  return true;
+
+  // Left parts built from the rack (cells left of the anchor are always
+  // non-anchor empties, so they carry no cross-word constraints). The
+  // partial word lives in leftBuf as flat (code, isBlank) pairs; cell
+  // positions are assigned when the rightward extension starts.
+  const leftBuf = [];
+  function leftPart(node, anchorPos, maxLeft) {
+    const len = leftBuf.length / 2;
+    const wordStart = anchorPos - len;
+    for (let j = 0; j < len; j++) {
+      placedChar[wordStart + j] = leftBuf[2 * j];
+      placedBlank[wordStart + j] = leftBuf[2 * j + 1];
+    }
+    extendRight(anchorPos, node, wordStart, anchorPos);
+
+    if (len >= maxLeft) return;
+    const s = trie.childStart[node], e = s + trie.childCount[node];
+    for (let k = s; k < e; k++) {
+      const code = trie.edgeChar[k];
+      let usedBlank;
+      if (counts[code] > 0) { counts[code]--; usedBlank = false; }
+      else if (blanks > 0) { blanks--; usedBlank = true; }
+      else continue;
+      leftBuf.push(code, usedBlank ? 1 : 0);
+      leftPart(trie.edgeNode[k], anchorPos, maxLeft);
+      leftBuf.length -= 2;
+      if (usedBlank) blanks++; else counts[code]++;
+    }
+  }
+
+  for (let a = 0; a < 15; a++) {
+    if (anchor[a] !== 1) continue;
+    if (a > 0 && fixed[a - 1] !== -1) {
+      // Existing tiles directly left of the anchor are the left part
+      let s = a - 1;
+      while (s > 0 && fixed[s - 1] !== -1) s--;
+      let node = 0;
+      for (let i = s; i < a && node !== -1; i++) node = trieChild(trie, node, fixed[i]);
+      if (node !== -1) extendRight(a, node, s, a);
+    } else {
+      // Rack-built left parts, at most up to the previous anchor or edge
+      let maxLeft = 0;
+      for (let i = a - 1; i >= 0 && fixed[i] === -1 && anchor[i] !== 1; i--) maxLeft++;
+      leftPart(0, a, maxLeft);
+    }
+  }
+
+  // Ties must resolve identically to the previous engine's scan order:
+  // shortest word first, then alphabetical, then leftmost start.
+  results.sort((x, y) =>
+    (x.word.length - y.word.length) ||
+    (x.word < y.word ? -1 : x.word > y.word ? 1 : 0) ||
+    (x.start - y.start));
+  return results;
 }
 
 // ============================================================
