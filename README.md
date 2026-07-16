@@ -21,13 +21,16 @@ A single-player word tile game played against the computer on a 15×15 board.
 
 2. Open `http://localhost:8080` in your browser.
 
-3. Click a tile in your rack to select it, then click an empty board cell to place it.
-   Click a placed tile on the board to return it to your rack.
+3. Click a tile in your rack to select it, then click an empty board cell to place it —
+   or drag tiles from the rack onto the board.
+   With no rack tile selected, clicking another empty cell moves your most recently
+   placed tile there.
 
-4. Click **Shuffle** to rearrange your rack tiles.
-   Click **Recall** to take back all tiles you placed this turn.
+4. Click **Shuffle Rack** to rearrange your rack tiles.
+   Click **Recall Tiles** to take back all tiles you placed this turn.
+   Click **Play Lifeline** (once per game) to have the computer play your best move for you.
    Click **Play Word** to submit your move.
-   Click **Pass** to skip your turn.
+   To pass, click **Play Word** with no tiles placed and confirm.
 
 5. The first word must cover the center star (★).
    All words formed — including cross-words — must be valid.
