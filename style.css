@@ -378,14 +378,6 @@ main {
 }
 .btn-primary:hover { background: #228b32; }
 
-.btn-secondary {
-  background: #b0a090;
-  color: #2c1a00;
-  padding: 8px;
-  flex: 1;
-}
-.btn-secondary:hover { background: #968070; }
-
 
 /* ========================
    MOVE LOG

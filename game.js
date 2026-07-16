@@ -58,6 +58,7 @@ const state = {
   selectedRackIdx: null,
   dragRackIdx: null,
   wordSet: null,
+  wordsByLength: null, // wordsByLength[n] = array of all n-letter words (2..15)
   gameOver: false,
   consecutivePasses: 0,
   lifelineUsed: false,
@@ -108,6 +109,11 @@ async function loadWordList() {
   state.wordSet = new Set(
     text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2)
   );
+  // Index by length so the move engine only scans words that can fit.
+  state.wordsByLength = Array.from({length: 16}, () => []);
+  for (const word of state.wordSet) {
+    if (word.length <= 15) state.wordsByLength[word.length].push(word);
+  }
 }
 
 function showLoadError(err) {
@@ -823,48 +829,17 @@ function getWordAt(r, c, isHoriz, pending) {
 // Collect all words formed by the pending placements
 function collectFormedWords(pending, isHorizMove) {
   const words = [];
-  const seen = new Set();
-
-  const addWord = (word, key) => {
-    if (word.length >= 2 && !seen.has(key)) {
-      seen.add(key);
-      words.push({word});
-    }
-  };
 
   // Main word
-  const first = pending[0];
-  const mainWord = getWordAt(
-    isHorizMove ? first.row : 0,
-    isHorizMove ? 0 : first.col,
-    isHorizMove, pending
-  );
-  // Actually need to get the full main word from the extent of the move
-  const mainWordStr = getWordAt(first.row, first.col, isHorizMove, pending);
-  addWord(mainWordStr, `${isHorizMove?'H':'V'}-${first.row}-${first.col}`);
-
-  // But the above may not give the full word if first tile is not the start
-  // Redo: find the actual main word
-  const mainWordFull = getWordAt(
-    isHorizMove ? pending[0].row : pending.reduce((mn,p)=>Math.min(mn,p.row),14),
-    isHorizMove ? pending.reduce((mn,p)=>Math.min(mn,p.col),14) : pending[0].col,
-    isHorizMove, pending
-  );
-
-  // Use the coord-anchored approach
   const row0 = isHorizMove ? pending[0].row : Math.min(...pending.map(p=>p.row));
   const col0 = isHorizMove ? Math.min(...pending.map(p=>p.col)) : pending[0].col;
   const mainStr = getWordAt(row0, col0, isHorizMove, pending);
-  seen.clear();
-  words.length = 0;
-  addWord(mainStr, 'main');
+  if (mainStr.length >= 2) words.push({word: mainStr});
 
   // Cross-words: for each newly placed tile, check perpendicular word
   for (const p of pending) {
     const crossStr = getWordAt(p.row, p.col, !isHorizMove, pending);
-    if (crossStr.length >= 2) {
-      addWord(crossStr, `cross-${p.row}-${p.col}`);
-    }
+    if (crossStr.length >= 2) words.push({word: crossStr});
   }
 
   return words;
@@ -882,7 +857,6 @@ function letterVal(letter, isBlank) {
 // Score a word defined by its cells, given a set of new tile positions
 function scoreWord(r0, c0, isHoriz, pendingArg) {
   const pendingMap = new Map((pendingArg||[]).map(p => [`${p.row},${p.col}`, p]));
-  const pendingSet = new Set(pendingMap.keys());
 
   const getCell = (r, c) => {
     const k = `${r},${c}`;
@@ -1079,21 +1053,6 @@ function passPlayerTurn() {
   setTimeout(computerTurn, 300);
 }
 
-async function findBestPlayerMove() {
-  let bestScore = -1;
-  let bestMove = null;
-  for (let i = 0; i < 15; i++) {
-    if (i % 3 === 0) await yieldToUI();
-    for (const isHoriz of [true, false]) {
-      const moves = findMovesInLine(i, isHoriz, state.playerRack);
-      for (const m of moves) {
-        if (m.score > bestScore) { bestScore = m.score; bestMove = m; }
-      }
-    }
-  }
-  return bestScore > 0 ? bestMove : null;
-}
-
 async function lifelineTurn() {
   if (!state.playerTurnActive || state.gameOver || state.lifelineUsed) return;
   state.lifelineUsed = true;
@@ -1103,7 +1062,7 @@ async function lifelineTurn() {
   const gameId = state.gameId;
 
   const t0 = performance.now();
-  const move = await findBestPlayerMove();
+  const move = await findBestMove(state.playerRack);
   const ms = Math.round(performance.now() - t0);
 
   // A new game may have started while the move search yielded to the UI.
@@ -1152,7 +1111,7 @@ async function computerTurn() {
   await yieldToUI();
 
   const t0 = performance.now();
-  const move = await findBestComputerMove();
+  const move = await findBestMove(state.computerRack);
   const ms = Math.round(performance.now() - t0);
 
   // The move search yields to the UI, so a new game may have started
@@ -1206,7 +1165,8 @@ function yieldToUI() {
 // COMPUTER MOVE ENGINE
 // ============================================================
 
-async function findBestComputerMove() {
+// Find the highest-scoring legal move for the given rack.
+async function findBestMove(rack) {
   let bestScore = -1;
   let bestMove = null;
 
@@ -1215,7 +1175,7 @@ async function findBestComputerMove() {
     if (i % 3 === 0) await yieldToUI();
 
     for (const isHoriz of [true, false]) {
-      const moves = findMovesInLine(i, isHoriz);
+      const moves = findMovesInLine(i, isHoriz, rack);
       for (const m of moves) {
         if (m.score > bestScore) {
           bestScore = m.score;
@@ -1228,7 +1188,7 @@ async function findBestComputerMove() {
   return bestScore > 0 ? bestMove : null;
 }
 
-function findMovesInLine(lineIdx, isHoriz, rack = state.computerRack) {
+function findMovesInLine(lineIdx, isHoriz, rack) {
   const results = [];
 
   // Build fixed letter array for this line
@@ -1264,89 +1224,93 @@ function findMovesInLine(lineIdx, isHoriz, rack = state.computerRack) {
 
   // Available pool for pre-filter: rack + fixed in line
   const allAvail = {...rackCounts};
-  for (const f of fixed) if (f !== null) allAvail[f] = (allAvail[f]||0)+1;
+  let fixedCount = 0;
+  for (const f of fixed) if (f !== null) { allAvail[f] = (allAvail[f]||0)+1; fixedCount++; }
 
-  for (const word of state.wordSet) {
-    const wlen = word.length;
-    if (wlen > 15 || wlen < 2) continue;
+  // Any placement covers at most fixedCount fixed cells, so a word longer
+  // than rack.length + fixedCount can never be spelled in this line.
+  const maxLen = Math.min(15, rack.length + fixedCount);
 
-    // Quick letter-count pre-filter
-    if (!canSpellFromPool(word, allAvail, blankCount)) continue;
+  for (let wlen = 2; wlen <= maxLen; wlen++) {
+    for (const word of state.wordsByLength[wlen]) {
+      // Quick letter-count pre-filter
+      if (!canSpellFromPool(word, allAvail, blankCount)) continue;
 
-    // Try each start position
-    for (let start = 0; start <= 15 - wlen; start++) {
-      const end = start + wlen - 1;
+      // Try each start position
+      for (let start = 0; start <= 15 - wlen; start++) {
+        const end = start + wlen - 1;
 
-      // Word must not abut another word (would extend it illegally)
-      if (start > 0 && fixed[start-1] !== null) continue;
-      if (end < 14 && fixed[end+1] !== null) continue;
+        // Word must not abut another word (would extend it illegally)
+        if (start > 0 && fixed[start-1] !== null) continue;
+        if (end < 14 && fixed[end+1] !== null) continue;
 
-      // Match word against fixed tiles, compute rack tiles needed
-      let ok = true;
-      let usesFixed = false;
-      let hasAnchorTile = false;
-      const rackNeeded = []; // {char, pos-in-line}
+        // Match word against fixed tiles, compute rack tiles needed
+        let ok = true;
+        let usesFixed = false;
+        let hasAnchorTile = false;
+        const rackNeeded = []; // {char, pos-in-line}
 
-      for (let i = 0; i < wlen; i++) {
-        const pos = start + i;
-        const ch = word[i];
-        if (fixed[pos] !== null) {
-          if (fixed[pos] !== ch) { ok = false; break; }
-          usesFixed = true;
-        } else {
-          rackNeeded.push({char: ch, pos});
+        for (let i = 0; i < wlen; i++) {
+          const pos = start + i;
+          const ch = word[i];
+          if (fixed[pos] !== null) {
+            if (fixed[pos] !== ch) { ok = false; break; }
+            usesFixed = true;
+          } else {
+            rackNeeded.push({char: ch, pos});
+            const [r, c] = isHoriz ? [lineIdx, pos] : [pos, lineIdx];
+            if (state.isFirstMove && r === 7 && c === 7) hasAnchorTile = true;
+            if (!state.isFirstMove && isAdjacentToExisting(r, c)) hasAnchorTile = true;
+          }
+        }
+
+        if (!ok) continue;
+        if (rackNeeded.length === 0) continue; // no new tiles placed
+        if (!usesFixed && !hasAnchorTile) continue; // not connected
+        if (state.isFirstMove) {
+          // Must include the center cell
+          let coversCenter = false;
+          for (let i = start; i <= end; i++) {
+            const [r, c] = isHoriz ? [lineIdx, i] : [i, lineIdx];
+            if (r === 7 && c === 7) { coversCenter = true; break; }
+          }
+          if (!coversCenter) continue;
+        }
+
+        // Verify rack can supply the needed letters
+        const rAvail = {...rackCounts};
+        let blanksLeft = blankCount;
+        const placements = [];
+        let rackOk = true;
+
+        for (const {char, pos} of rackNeeded) {
           const [r, c] = isHoriz ? [lineIdx, pos] : [pos, lineIdx];
-          if (state.isFirstMove && r === 7 && c === 7) hasAnchorTile = true;
-          if (!state.isFirstMove && isAdjacentToExisting(r, c)) hasAnchorTile = true;
+          if (rAvail[char] > 0) {
+            rAvail[char]--;
+            placements.push({row:r, col:c, letter:char.toUpperCase(), isBlank:false});
+          } else if (blanksLeft > 0) {
+            blanksLeft--;
+            placements.push({row:r, col:c, letter:char.toUpperCase(), isBlank:true});
+          } else {
+            rackOk = false; break;
+          }
         }
-      }
+        if (!rackOk) continue;
 
-      if (!ok) continue;
-      if (rackNeeded.length === 0) continue; // no new tiles placed
-      if (!usesFixed && !hasAnchorTile) continue; // not connected
-      if (state.isFirstMove) {
-        // Must include the center cell
-        let coversCenter = false;
-        for (let i = start; i <= end; i++) {
-          const [r, c] = isHoriz ? [lineIdx, i] : [i, lineIdx];
-          if (r === 7 && c === 7) { coversCenter = true; break; }
+        // Validate cross-words for each newly placed tile
+        let crossOk = true;
+        for (const p of placements) {
+          const cw = getCrossWordStr(p.row, p.col, p.letter.toLowerCase(), !isHoriz);
+          if (cw.length >= 2 && !state.wordSet.has(cw)) {
+            crossOk = false; break;
+          }
         }
-        if (!coversCenter) continue;
+        if (!crossOk) continue;
+
+        // Score this move
+        const score = scorePlacement(placements, isHoriz);
+        results.push({placements, word, score});
       }
-
-      // Verify rack can supply the needed letters
-      const rAvail = {...rackCounts};
-      let blanksLeft = blankCount;
-      const placements = [];
-      let rackOk = true;
-
-      for (const {char, pos} of rackNeeded) {
-        const [r, c] = isHoriz ? [lineIdx, pos] : [pos, lineIdx];
-        if (rAvail[char] > 0) {
-          rAvail[char]--;
-          placements.push({row:r, col:c, letter:char.toUpperCase(), isBlank:false});
-        } else if (blanksLeft > 0) {
-          blanksLeft--;
-          placements.push({row:r, col:c, letter:char.toUpperCase(), isBlank:true});
-        } else {
-          rackOk = false; break;
-        }
-      }
-      if (!rackOk) continue;
-
-      // Validate cross-words for each newly placed tile
-      let crossOk = true;
-      for (const p of placements) {
-        const cw = getCrossWordStr(p.row, p.col, p.letter.toLowerCase(), !isHoriz);
-        if (cw.length >= 2 && !state.wordSet.has(cw)) {
-          crossOk = false; break;
-        }
-      }
-      if (!crossOk) continue;
-
-      // Score this move
-      const score = scoreComputerMove(placements, isHoriz);
-      results.push({placements, word, score});
     }
   }
 
@@ -1374,73 +1338,6 @@ function getCrossWordStr(row, col, newLetter, isHoriz) {
     while (rr < 15 && getL(rr, col) !== null) { word += getL(rr, col); rr++; }
   }
   return word;
-}
-
-// Score a computer move placement (placements not yet on board)
-function scoreComputerMove(placements, isHoriz) {
-  const pendingMap = new Map(placements.map(p => [`${p.row},${p.col}`, p]));
-  const pendingSet = new Set(pendingMap.keys());
-
-  const getCell = (r, c) => {
-    const k = `${r},${c}`;
-    if (pendingMap.has(k)) {
-      const p = pendingMap.get(k);
-      return {letter:p.letter, isBlank:p.isBlank, isNew:true};
-    }
-    const b = state.board[r][c];
-    return b ? {letter:b.letter, isBlank:b.isBlank, isNew:false} : null;
-  };
-
-  const scoreOneWord = (r0, c0, wordIsHoriz) => {
-    let start = wordIsHoriz ? c0 : r0;
-    const fixed = wordIsHoriz ? r0 : c0;
-    while (start > 0) {
-      const cell = wordIsHoriz ? getCell(fixed, start-1) : getCell(start-1, fixed);
-      if (!cell) break;
-      start--;
-    }
-    let sc = 0, wm = 1, pos = start;
-    while (pos < 15) {
-      const cell = wordIsHoriz ? getCell(fixed, pos) : getCell(pos, fixed);
-      if (!cell) break;
-      const [cr, cc] = wordIsHoriz ? [fixed, pos] : [pos, fixed];
-      const bonus = cell.isNew ? BONUS_MAP[cr][cc] : null;
-      let lv = letterVal(cell.letter, cell.isBlank);
-      if (bonus === 'TL') lv *= 3;
-      else if (bonus === 'DL') lv *= 2;
-      sc += lv;
-      if (bonus === 'TW') wm *= 3;
-      else if (bonus === 'DW') wm *= 2;
-      pos++;
-    }
-    return sc * wm;
-  };
-
-  // Main word
-  const r0 = isHoriz ? placements[0].row : Math.min(...placements.map(p=>p.row));
-  const c0 = isHoriz ? Math.min(...placements.map(p=>p.col)) : placements[0].col;
-  let total = scoreOneWord(r0, c0, isHoriz);
-
-  // Cross-words
-  for (const p of placements) {
-    // Check if there are tiles above/below (for H move) or left/right (for V move)
-    const [pr, pc] = [p.row, p.col];
-    const crossIsHoriz = !isHoriz;
-    let hasNeighbor = false;
-    if (crossIsHoriz) {
-      hasNeighbor = (pc > 0 && getCell(pr, pc-1) !== null) || (pc < 14 && getCell(pr, pc+1) !== null);
-    } else {
-      hasNeighbor = (pr > 0 && getCell(pr-1, pc) !== null) || (pr < 14 && getCell(pr+1, pc) !== null);
-    }
-    if (hasNeighbor) {
-      total += scoreOneWord(pr, pc, crossIsHoriz);
-    }
-  }
-
-  // Bingo
-  if (placements.length === 7) total += 50;
-
-  return total;
 }
 
 // Quick pre-filter: can this word be spelled from the available pool?
