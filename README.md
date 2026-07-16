@@ -48,3 +48,26 @@ A single-player word tile game played against the computer on a 15×15 board.
 ## Word List
 
 The game uses the ENABLE word list, which is in the public domain (~173,000 words).
+
+## Comparing Engine Versions
+
+`tools/match.js` plays two versions of the move engine against each other
+headlessly (Node.js, no browser needed) and reports wins, average score,
+average time per move for each version, and average moves per game.
+
+```bash
+# Current engine against an older revision, 10 mirrored pairs (20 games):
+git show <rev>:game.js > /tmp/game-old.js
+node tools/match.js --a game.js --b /tmp/game-old.js --pairs 10
+
+# Options: --pairs N (default 3), --seed S (default 1),
+#          --jobs J (parallel games, default = CPUs, max 4),
+#          --verbose (sequential, logs every move)
+```
+
+Matches are fair: each pair plays one seeded bag shuffle twice with the
+seats swapped ("color swap"), so both engines get the identical starting
+tiles and draw order from each seat, and the same base seed always
+reproduces the same match. The engines are deterministic, so an A-vs-A
+match produces exactly mirrored scores — a quick way to sanity-check the
+harness itself.
