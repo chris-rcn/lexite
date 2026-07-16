@@ -60,6 +60,10 @@ const state = {
   wordSet: null,
   gameOver: false,
   consecutivePasses: 0,
+  lifelineUsed: false,
+  // Incremented on every new game so in-flight async turns can detect
+  // that the game they were computing for has been discarded.
+  gameId: 0,
   playerTurnActive: false,
   blankCallback: null,
   lastPlay: new Set(),  // set of "row,col" keys for the most recent play
@@ -88,21 +92,35 @@ async function init() {
     newGame();
   });
 
-  await loadWordList();
+  try {
+    await loadWordList();
+  } catch (e) {
+    showLoadError(e);
+    return;
+  }
   newGame();
 }
 
 async function loadWordList() {
-  try {
-    const resp = await fetch('words.txt');
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const text = await resp.text();
-    state.wordSet = new Set(
-      text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2)
-    );
-  } catch (e) {
-    throw e;
-  }
+  const resp = await fetch('words.txt');
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const text = await resp.text();
+  state.wordSet = new Set(
+    text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2)
+  );
+}
+
+function showLoadError(err) {
+  const container = document.getElementById('board-container');
+  container.innerHTML = '';
+  const msg = document.createElement('div');
+  msg.id = 'load-error';
+  msg.textContent =
+    'Could not load the word list (words.txt): ' + err.message + '. ' +
+    'The game must be served over HTTP — run e.g. "python3 -m http.server 8080" ' +
+    'in the game directory, then open http://localhost:8080 and reload.';
+  container.appendChild(msg);
+  enablePlayerControls(false);
 }
 
 // ============================================================
@@ -126,6 +144,7 @@ function newGame() {
   state.lastPlay = new Set();
   state.lifelineUsed = false;
   state.playerTurnActive = true;
+  state.gameId++;
 
   drawTiles(state.playerRack, 7);
   drawTiles(state.computerRack, 7);
@@ -402,6 +421,8 @@ function renderRack() {
       if (!state.playerTurnActive) { e.preventDefault(); return; }
       state.dragRackIdx = idx;
       state.selectedRackIdx = idx;
+      // Firefox refuses to start a drag unless some data is set.
+      e.dataTransfer.setData('text/plain', String(idx));
       e.dataTransfer.effectAllowed = 'move';
       // Use a clone as the drag image so the browser renders the full tile
       // instead of a platform-default outline/ghost.
@@ -526,6 +547,16 @@ function logEntry(msg, cls) {
   div.className = 'log-entry ' + (cls || 'system');
   div.textContent = msg;
   log.prepend(div);
+}
+
+let errorToastTimer = null;
+
+function showMoveError(msg) {
+  const toast = document.getElementById('error-toast');
+  toast.textContent = msg;
+  toast.classList.remove('hidden');
+  clearTimeout(errorToastTimer);
+  errorToastTimer = setTimeout(() => toast.classList.add('hidden'), 2600);
 }
 
 function enablePlayerControls(on) {
@@ -1003,6 +1034,7 @@ function submitPlayerMove() {
 
   const result = validatePlayerMove();
   if (!result.valid) {
+    showMoveError(result.error);
     return;
   }
 
@@ -1068,10 +1100,14 @@ async function lifelineTurn() {
   document.getElementById('btn-lifeline').disabled = true;
   recallAllTiles();
   enablePlayerControls(false);
+  const gameId = state.gameId;
 
   const t0 = performance.now();
   const move = await findBestPlayerMove();
   const ms = Math.round(performance.now() - t0);
+
+  // A new game may have started while the move search yielded to the UI.
+  if (gameId !== state.gameId) return;
 
   if (!move) {
     state.consecutivePasses++;
@@ -1110,11 +1146,18 @@ async function lifelineTurn() {
 // ============================================================
 
 async function computerTurn() {
+  // Bail if a new game started before this (scheduled) turn began.
+  if (state.turn !== 'computer' || state.gameOver) return;
+  const gameId = state.gameId;
   await yieldToUI();
 
   const t0 = performance.now();
   const move = await findBestComputerMove();
   const ms = Math.round(performance.now() - t0);
+
+  // The move search yields to the UI, so a new game may have started
+  // mid-search — discard the stale move instead of committing it.
+  if (gameId !== state.gameId) return;
 
   if (!move) {
     state.consecutivePasses++;
@@ -1460,11 +1503,22 @@ function endGame(reason) {
   const pScore = state.playerScore;
   const cScore = state.computerScore;
   let winner;
-  if (pScore > cScore) winner = 'You win.';
+  if (pScore > cScore) winner = 'You win!';
   else if (cScore > pScore) winner = 'Computer wins.';
   else winner = "It's a tie.";
 
-  logEntry(`Game over. ${winner}`, 'system');
+  logEntry(`${reason} ${winner}`, 'system');
+
+  const scoresEl = document.getElementById('end-scores');
+  scoresEl.innerHTML = '';
+  const reasonLine = document.createElement('div');
+  reasonLine.textContent = reason;
+  const scoreLine = document.createElement('div');
+  scoreLine.textContent = `You ${pScore} — Computer ${cScore}`;
+  scoresEl.appendChild(reasonLine);
+  scoresEl.appendChild(scoreLine);
+  document.getElementById('end-winner').textContent = winner;
+  document.getElementById('end-overlay').classList.remove('hidden');
 }
 
 // ============================================================

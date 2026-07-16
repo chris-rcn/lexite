@@ -683,6 +683,37 @@ main {
   to   { opacity: 0.75; transform: translate(-50%, -50%) scale(1); }
 }
 
+/* Invalid-move error toast */
+#error-toast {
+  position: fixed;
+  top: 68px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  background: #c0392b;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 8px 16px;
+  border-radius: 6px;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.4);
+  max-width: 90vw;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Word-list load failure message */
+#load-error {
+  background: #fff3f0;
+  color: #a03020;
+  border: 1px solid #d0806c;
+  border-radius: 8px;
+  padding: 20px;
+  max-width: 480px;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
 #build-stamp {
   text-align: center;
   font-size: 0.65rem;
