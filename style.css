@@ -411,8 +411,8 @@ main {
 .action-row button {
   flex: 1;
   min-width: 0;
-  padding-left: 8px;
-  padding-right: 8px;
+  padding: 9px 8px;
+  font-size: 0.85rem;
 }
 
 .btn-primary {
