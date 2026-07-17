@@ -617,6 +617,16 @@ main {
 
 #btn-play-again:hover { background: #228b32; }
 
+#end-close {
+  display: block;
+  margin: 10px auto 0;
+  background: #e0e0e0;
+  color: #444;
+  padding: 8px 20px;
+}
+
+#end-close:hover { background: #ccc; }
+
 /* ========================
    RESPONSIVE
    ======================== */

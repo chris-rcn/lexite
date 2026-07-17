@@ -102,6 +102,16 @@ async function init() {
     document.getElementById('end-overlay').classList.add('hidden');
     newGame();
   });
+  // The end dialog can be dismissed to inspect the final board — via the
+  // View Board button or a click on the backdrop.
+  document.getElementById('end-close').addEventListener('click', () => {
+    document.getElementById('end-overlay').classList.add('hidden');
+  });
+  document.getElementById('end-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('end-overlay')) {
+      document.getElementById('end-overlay').classList.add('hidden');
+    }
+  });
 
   try {
     await loadWordList();
