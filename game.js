@@ -19,6 +19,12 @@ const TILE_DATA = {
 const LETTER_VALUES = {};
 for (const [ch,[,v]] of Object.entries(TILE_DATA)) LETTER_VALUES[ch] = v;
 
+// Letter values indexed by code 0-25 for the move generator's hot path
+const LETTER_VAL_BY_CODE = new Int32Array(26);
+for (let i = 0; i < 26; i++) {
+  LETTER_VAL_BY_CODE[i] = LETTER_VALUES[String.fromCharCode(65 + i)] || 0;
+}
+
 // Bonus square map — built once at load
 const BONUS_MAP = Array.from({length:15}, () => new Array(15).fill(null));
 (function buildBonusMap() {
@@ -1239,61 +1245,100 @@ function trieChild(trie, node, code) {
 
 const ALL_LETTERS_MASK = (1 << 26) - 1;
 
-// Bitmask of letters that form a valid perpendicular word at (r, c), or
-// every letter if the cell has no perpendicular neighbors.
-function computeCrossMask(r, c, moveIsHoriz) {
-  let prefix = '', suffix = '';
+// Cross-check data for empty cell (r, c) at line position i: a bitmask of
+// letters forming a valid perpendicular word, the value sum of the
+// perpendicular tiles (for incremental scoring), and whether any
+// perpendicular neighbor exists at all. Letter validity is resolved by
+// walking the trie instead of building candidate strings.
+function computeCrossData(r, c, moveIsHoriz, i, maskArr, sumArr, hasArr) {
+  const pre = [], suf = [];
+  let sum = 0;
+  const take = (cell, arr) => {
+    arr.push(cell.letter.toLowerCase().charCodeAt(0) - 97);
+    sum += cell.isBlank ? 0 : (LETTER_VALUES[cell.letter.toUpperCase()] || 0);
+  };
   if (moveIsHoriz) {
     let k = r;
     while (k > 0 && state.board[k - 1][c]) k--;
-    for (; k < r; k++) prefix += state.board[k][c].letter.toLowerCase();
-    for (k = r + 1; k < 15 && state.board[k][c]; k++) suffix += state.board[k][c].letter.toLowerCase();
+    for (; k < r; k++) take(state.board[k][c], pre);
+    for (k = r + 1; k < 15 && state.board[k][c]; k++) take(state.board[k][c], suf);
   } else {
     let k = c;
     while (k > 0 && state.board[r][k - 1]) k--;
-    for (; k < c; k++) prefix += state.board[r][k].letter.toLowerCase();
-    for (k = c + 1; k < 15 && state.board[r][k]; k++) suffix += state.board[r][k].letter.toLowerCase();
+    for (; k < c; k++) take(state.board[r][k], pre);
+    for (k = c + 1; k < 15 && state.board[r][k]; k++) take(state.board[r][k], suf);
   }
-  if (prefix === '' && suffix === '') return ALL_LETTERS_MASK;
+  if (pre.length === 0 && suf.length === 0) return; // defaults: ALL mask, no cross
+
+  hasArr[i] = 1;
+  sumArr[i] = sum;
+  const trie = state.trie;
+  let node = 0;
+  for (const code of pre) {
+    node = trieChild(trie, node, code);
+    if (node === -1) { maskArr[i] = 0; return; }
+  }
   let mask = 0;
-  for (let l = 0; l < 26; l++) {
-    if (state.wordSet.has(prefix + String.fromCharCode(97 + l) + suffix)) mask |= (1 << l);
+  const s = trie.childStart[node], e = s + trie.childCount[node];
+  outer: for (let k = s; k < e; k++) {
+    let n = trie.edgeNode[k];
+    for (const code of suf) {
+      n = trieChild(trie, n, code);
+      if (n === -1) continue outer;
+    }
+    if (trie.terminal[n] === 1) mask |= 1 << trie.edgeChar[k];
   }
-  return mask;
+  maskArr[i] = mask;
 }
 
 // ============================================================
 // LEAVE EVALUATION
 // ============================================================
 
-// Value of the tiles kept after playing `placements` from `rack`, using
-// weights trained by tools/train-leaves.js (loaded from leaves.js). The
-// model is linear in per-letter counts plus all unordered letter-pair
-// counts — same-letter pairs encode duplicates, and synergies like QU
-// are ordinary pair weights. Pair keys are the two characters in
-// lexicographic order ('?' sorts first). When no weights are loaded the
-// value is 0 and selection is pure greedy.
-function leaveValue(rack, placements) {
-  if (typeof LEAVE_WEIGHTS === 'undefined' || !LEAVE_WEIGHTS) return 0;
-  const counts = {};
-  for (const t of rack) {
-    const k = t.isBlank ? '?' : t.letter.toUpperCase();
-    counts[k] = (counts[k] || 0) + 1;
-  }
-  for (const p of placements) {
-    const k = p.isBlank ? '?' : p.letter.toUpperCase();
-    counts[k]--;
-  }
+// The leave model is linear in per-letter counts plus all unordered
+// letter-pair counts — same-letter pairs encode duplicates, and synergies
+// like QU are ordinary pair weights (weights trained by
+// tools/train-leaves.js, loaded from leaves.js). For the hot path the
+// weights are compiled once into typed arrays indexed by letter code
+// (0-25 = A-Z, 26 = blank).
+let leaveTables = null;
 
-  const W = LEAVE_WEIGHTS;
-  const kept = Object.keys(counts).filter(k => counts[k] > 0).sort();
+function ensureLeaveTables() {
+  const W = (typeof LEAVE_WEIGHTS !== 'undefined' && LEAVE_WEIGHTS) ? LEAVE_WEIGHTS : null;
+  if (!W) { leaveTables = null; return; }
+  if (leaveTables && leaveTables.src === W) return;
+  const codeOf = ch => ch === '?' ? 26 : ch.charCodeAt(0) - 65;
+  const letterW = new Float64Array(27);
+  for (const [ch, v] of Object.entries(W.letter || {})) letterW[codeOf(ch)] = v;
+  const pairW = new Float64Array(27 * 27);
+  for (const [key, v] of Object.entries(W.pair || {})) {
+    const a = codeOf(key[0]), b = codeOf(key[1]);
+    pairW[Math.min(a, b) * 27 + Math.max(a, b)] = v;
+  }
+  leaveTables = { src: W, letterW, pairW };
+}
+
+// Letter codes in the iteration order of the previous implementation
+// (kept letters sorted as characters, where '?' sorts before 'A') — the
+// float additions must happen in the same order to stay bit-identical.
+const LEAVE_CHAR_ORDER = [26].concat(Array.from({ length: 26 }, (_, i) => i));
+
+// Value of the kept tiles given their counts by letter code.
+function leaveValueFromCounts(counts) {
+  const t = leaveTables;
+  if (!t) return 0;
+  const present = [];
+  for (const code of LEAVE_CHAR_ORDER) {
+    if (counts[code] > 0) present.push(code);
+  }
   let val = 0;
-  for (let a = 0; a < kept.length; a++) {
-    const k1 = kept[a], n1 = counts[k1];
-    val += (W.letter[k1] || 0) * n1;
-    if (n1 >= 2) val += (W.pair[k1 + k1] || 0) * (n1 * (n1 - 1) / 2);
-    for (let b = a + 1; b < kept.length; b++) {
-      val += (W.pair[k1 + kept[b]] || 0) * n1 * counts[kept[b]];
+  for (let a = 0; a < present.length; a++) {
+    const c1 = present[a], n1 = counts[c1];
+    val += t.letterW[c1] * n1;
+    if (n1 >= 2) val += t.pairW[c1 * 27 + c1] * (n1 * (n1 - 1) / 2);
+    for (let b = a + 1; b < present.length; b++) {
+      const c2 = present[b];
+      val += t.pairW[Math.min(c1, c2) * 27 + Math.max(c1, c2)] * n1 * counts[c2];
     }
   }
   return val;
@@ -1503,22 +1548,43 @@ async function findBestEndgameMove(rack) {
 // adversarial endgame search instead.
 async function findBestMove(rack) {
   ensureTrie();
+  ensureLeaveTables();
   if (state.bag.length === 0) return findBestEndgameMove(rack);
   // The kept rack only has a future while there are tiles to draw into —
   // as the bag runs out, selection fades back to raw score.
   const leaveScale = Math.min(1, state.bag.length / 7);
+  const useLeave = leaveScale > 0 && leaveTables !== null;
+  const rackCounts = new Int32Array(27);
+  for (const t of rack) {
+    rackCounts[t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65]++;
+  }
   let bestVal = -Infinity;
   let bestMove = null;
+  let lastYield = performance.now();
 
   for (let i = 0; i < 15; i++) {
-    // Yield every 3 lines to keep UI alive
-    if (i % 3 === 0) await yieldToUI();
+    // Yield to the UI only when a while has actually passed — an
+    // unconditional yield per few lines costs more than the search on
+    // fast turns.
+    if (performance.now() - lastYield > 12) {
+      await yieldToUI();
+      lastYield = performance.now();
+    }
 
     for (const isHoriz of [true, false]) {
       const moves = findMovesInLine(i, isHoriz, rack);
       for (const m of moves) {
         if (m.score <= 0) continue;
-        const val = m.score + (leaveScale > 0 ? leaveScale * leaveValue(rack, m.placements) : 0);
+        let val = m.score;
+        if (useLeave) {
+          for (const p of m.placements) {
+            rackCounts[p.isBlank ? 26 : p.letter.charCodeAt(0) - 65]--;
+          }
+          val += leaveScale * leaveValueFromCounts(rackCounts);
+          for (const p of m.placements) {
+            rackCounts[p.isBlank ? 26 : p.letter.charCodeAt(0) - 65]++;
+          }
+        }
         if (val > bestVal) {
           bestVal = val;
           bestMove = m;
@@ -1533,22 +1599,34 @@ async function findBestMove(rack) {
 // Generate all legal moves in one line via the trie (Appel–Jacobson):
 // depth-first walks outward from each anchor square consume rack tiles and
 // prune the instant the dictionary cannot extend the prefix, so only
-// viable words are ever visited. Blanks are assigned greedily (real tile
-// first), matching the previous engine, and results are sorted by
-// (length, word, start) — the previous engine's scan order — so
+// viable words are ever visited. Scores accumulate incrementally during
+// the walk from per-line bonus and cross-sum tables (integer arithmetic,
+// so results are exactly scorePlacement's). Blanks are assigned greedily
+// (real tile first), matching the previous engine, and results are sorted
+// by (length, word, start) — the previous engine's scan order — so
 // findBestMove's first-strict-max selection picks the identical move.
 function findMovesInLine(lineIdx, isHoriz, rack) {
   const results = [];
   if (state.isFirstMove && lineIdx !== 7) return results;
   const trie = state.trie;
 
-  const idxRC = i => isHoriz ? [lineIdx, i] : [i, lineIdx];
-
-  // Fixed letters in this line as codes 0-25 (-1 = empty)
+  // Per-line tables: fixed letters/values (blank tiles are worth 0) and
+  // bonus multipliers (which only ever apply to newly placed tiles).
   const fixed = new Int8Array(15).fill(-1);
+  const fixedVal = new Int8Array(15);
+  const letterMult = new Uint8Array(15);
+  const wordMult = new Uint8Array(15);
   for (let i = 0; i < 15; i++) {
-    const [r, c] = idxRC(i);
-    if (state.board[r][c]) fixed[i] = state.board[r][c].letter.toLowerCase().charCodeAt(0) - 97;
+    const r = isHoriz ? lineIdx : i;
+    const c = isHoriz ? i : lineIdx;
+    const cell = state.board[r][c];
+    if (cell) {
+      fixed[i] = cell.letter.toLowerCase().charCodeAt(0) - 97;
+      fixedVal[i] = cell.isBlank ? 0 : (LETTER_VALUES[cell.letter.toUpperCase()] || 0);
+    }
+    const bonus = BONUS_MAP[r][c];
+    letterMult[i] = bonus === 'TL' ? 3 : bonus === 'DL' ? 2 : 1;
+    wordMult[i] = bonus === 'TW' ? 3 : bonus === 'DW' ? 2 : 1;
   }
 
   // Anchors: empty cells a move may build from. Every legal move places a
@@ -1556,14 +1634,17 @@ function findMovesInLine(lineIdx, isHoriz, rack) {
   // the leftmost anchor its new tiles cover.
   const anchor = new Uint8Array(15);
   const crossMask = new Int32Array(15).fill(ALL_LETTERS_MASK);
+  const crossSum = new Int32Array(15);
+  const hasCross = new Uint8Array(15);
   let anyAnchor = false;
   for (let i = 0; i < 15; i++) {
     if (fixed[i] !== -1) continue;
-    const [r, c] = idxRC(i);
+    const r = isHoriz ? lineIdx : i;
+    const c = isHoriz ? i : lineIdx;
     if (state.isFirstMove ? (r === 7 && c === 7) : isAdjacentToExisting(r, c)) {
       anchor[i] = 1;
       anyAnchor = true;
-      crossMask[i] = computeCrossMask(r, c, isHoriz);
+      computeCrossData(r, c, isHoriz, i, crossMask, crossSum, hasCross);
     }
   }
   if (!anyAnchor) return results;
@@ -1579,35 +1660,41 @@ function findMovesInLine(lineIdx, isHoriz, rack) {
   const placedChar = new Int8Array(15);
   const placedBlank = new Uint8Array(15);
 
-  const record = (start, end) => {
+  const record = (start, end, score) => {
     let word = '';
     const placements = [];
     for (let i = start; i <= end; i++) {
       const code = fixed[i] !== -1 ? fixed[i] : placedChar[i];
       word += String.fromCharCode(97 + code);
       if (fixed[i] === -1) {
-        const [r, c] = idxRC(i);
+        const r = isHoriz ? lineIdx : i;
+        const c = isHoriz ? i : lineIdx;
         placements.push({ row: r, col: c, letter: String.fromCharCode(65 + code), isBlank: placedBlank[i] === 1 });
       }
     }
-    results.push({ placements, word, score: scorePlacement(placements, isHoriz), start });
+    results.push({ placements, word, score, start });
   };
 
   // Extend rightward: letters wordStart..pos-1 are already consumed into
-  // `node`. A word is recorded when the dictionary marks it terminal, the
-  // walk has covered the anchor (guaranteeing >= 1 new tile and board
-  // connection), and the next cell is not fixed (no illegal extension).
-  function extendRight(pos, node, wordStart, anchorPos) {
+  // `node`, with main-word value `sum`, word multiplier `wMult`,
+  // accumulated (already multiplied) cross-word points `crossTot`, and
+  // `placed` new tiles so far. A word is recorded when the dictionary
+  // marks it terminal, the walk has covered the anchor (guaranteeing
+  // >= 1 new tile and board connection), and the next cell is not fixed
+  // (no illegal extension).
+  function extendRight(pos, node, wordStart, anchorPos, sum, wMult, crossTot, placed) {
     const offBoard = pos >= 15;
     if ((offBoard || fixed[pos] === -1) &&
         pos > anchorPos && trie.terminal[node] === 1 && pos - wordStart >= 2) {
-      record(wordStart, pos - 1);
+      record(wordStart, pos - 1, sum * wMult + crossTot + (placed === 7 ? 50 : 0));
     }
     if (offBoard) return;
 
     if (fixed[pos] !== -1) {
       const next = trieChild(trie, node, fixed[pos]);
-      if (next !== -1) extendRight(pos + 1, next, wordStart, anchorPos);
+      if (next !== -1) {
+        extendRight(pos + 1, next, wordStart, anchorPos, sum + fixedVal[pos], wMult, crossTot, placed);
+      }
       return;
     }
     // Empty cell: try each rack-playable child the cross-check allows
@@ -1621,7 +1708,10 @@ function findMovesInLine(lineIdx, isHoriz, rack) {
       else continue;
       placedChar[pos] = code;
       placedBlank[pos] = usedBlank ? 1 : 0;
-      extendRight(pos + 1, trie.edgeNode[k], wordStart, anchorPos);
+      const add = (usedBlank ? 0 : LETTER_VAL_BY_CODE[code]) * letterMult[pos];
+      const ct = hasCross[pos] === 1 ? crossTot + (crossSum[pos] + add) * wordMult[pos] : crossTot;
+      extendRight(pos + 1, trie.edgeNode[k], wordStart, anchorPos,
+        sum + add, wMult * wordMult[pos], ct, placed + 1);
       if (usedBlank) blanks++; else counts[code]++;
     }
   }
@@ -1629,18 +1719,25 @@ function findMovesInLine(lineIdx, isHoriz, rack) {
   // Left parts built from the rack (cells left of the anchor are always
   // non-anchor empties, so they carry no cross-word constraints). The
   // partial word lives in leftBuf as flat (code, isBlank) pairs; cell
-  // positions are assigned when the rightward extension starts.
+  // positions — and therefore bonus multipliers — are assigned when the
+  // rightward extension starts.
   const leftBuf = [];
-  function leftPart(node, anchorPos, maxLeft) {
+  function startExtend(node, anchorPos) {
     const len = leftBuf.length / 2;
     const wordStart = anchorPos - len;
+    let sum = 0, wMult = 1;
     for (let j = 0; j < len; j++) {
-      placedChar[wordStart + j] = leftBuf[2 * j];
-      placedBlank[wordStart + j] = leftBuf[2 * j + 1];
+      const pos = wordStart + j;
+      placedChar[pos] = leftBuf[2 * j];
+      placedBlank[pos] = leftBuf[2 * j + 1];
+      sum += (leftBuf[2 * j + 1] === 1 ? 0 : LETTER_VAL_BY_CODE[leftBuf[2 * j]]) * letterMult[pos];
+      wMult *= wordMult[pos];
     }
-    extendRight(anchorPos, node, wordStart, anchorPos);
-
-    if (len >= maxLeft) return;
+    extendRight(anchorPos, node, wordStart, anchorPos, sum, wMult, 0, len);
+  }
+  function leftPart(node, anchorPos, maxLeft) {
+    startExtend(node, anchorPos);
+    if (leftBuf.length / 2 >= maxLeft) return;
     const s = trie.childStart[node], e = s + trie.childCount[node];
     for (let k = s; k < e; k++) {
       const code = trie.edgeChar[k];
@@ -1661,9 +1758,12 @@ function findMovesInLine(lineIdx, isHoriz, rack) {
       // Existing tiles directly left of the anchor are the left part
       let s = a - 1;
       while (s > 0 && fixed[s - 1] !== -1) s--;
-      let node = 0;
-      for (let i = s; i < a && node !== -1; i++) node = trieChild(trie, node, fixed[i]);
-      if (node !== -1) extendRight(a, node, s, a);
+      let node = 0, prefixSum = 0;
+      for (let i = s; i < a && node !== -1; i++) {
+        node = trieChild(trie, node, fixed[i]);
+        prefixSum += fixedVal[i];
+      }
+      if (node !== -1) extendRight(a, node, s, a, prefixSum, 1, 0, 0);
     } else {
       // Rack-built left parts, at most up to the previous anchor or edge
       let maxLeft = 0;
