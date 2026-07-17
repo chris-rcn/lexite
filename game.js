@@ -714,7 +714,7 @@ function validatePlayerMove() {
     if (state.isFirstMove) {
       if (!(pending[0].row === 7 && pending[0].col === 7))
         return {valid:false, error:'The first word must cover the center square (★).'};
-      return {valid:false, error:'The first word must be at least 2 letters.'};
+      return {valid:false, error:'A word must be at least 2 letters.'};
     }
     const {row,col} = pending[0];
     const hWord = getWordAt(row, col, true, pending);
@@ -753,8 +753,7 @@ function validatePlayerMove() {
   if (state.isFirstMove) {
     if (!pending.some(p => p.row === 7 && p.col === 7))
       return {valid:false, error:'The first word must cover the center square (★).'};
-    if (pending.length < 2)
-      return {valid:false, error:'The first word must be at least 2 letters.'};
+    // (single-tile first moves are rejected above, so pending.length >= 2)
   } else {
     const usesExisting = pending.some(p => isAdjacentToExisting(p.row, p.col));
     const spansExisting = (() => {
