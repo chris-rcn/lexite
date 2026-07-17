@@ -1636,12 +1636,72 @@ async function collectTopCandidates(rack, k) {
 // ============================================================
 
 const SIM = {
-  CANDIDATES: 5,   // static candidates evaluated by simulation
-  SAMPLES: 20,     // sampled worlds, shared across candidates
-  CONFIDENCE: 1.5, // paired z threshold to overrule the static choice
-  MIN_WORLDS: 6,   // worlds evaluated before pruning may trigger
-  PRUNE_EVERY: 2,  // prune check cadence (in worlds) after the minimum
+  CANDIDATES: 5,    // static candidates evaluated by simulation
+  SAMPLES: 20,      // sampled worlds, shared across candidates
+  CONFIDENCE: 1.5,  // paired z threshold to overrule the static choice
+  MIN_WORLDS: 6,    // worlds evaluated before pruning may trigger
+  PRUNE_EVERY: 2,   // prune check cadence (in worlds) after the minimum
+  TERMINAL_BAG: 8,  // with fewer real bag tiles than this, worlds play
+                    // out to the end of the game instead of 2 plies
 };
+
+// Play a sampled world to the end of the game after the candidate move:
+// both sides move statically (our measurements put greedy within a point
+// of search at the empty-bag phase, and it is 5x cheaper here), drawing
+// from the world's fixed order, under the real terminal rules — going
+// out banks the opponent's rack value twice, two consecutive passes
+// strand both racks. Returns the exact final margin for the mover.
+// Board mutations are unwound before returning.
+async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize) {
+  let margin = moveScore;
+  const applied = [];
+  let myRack = myKeptTiles.slice();
+  let oppRack = world.slice(0, oppSize);
+  const bagArr = world.slice(oppSize);
+  const draw = rack => {
+    while (rack.length < 7 && bagArr.length > 0) rack.push(bagArr.shift());
+  };
+  draw(myRack); // refill after the candidate move
+
+  let side = 1; // opponent moves next
+  let passes = 0;
+  for (let plies = 0; ; plies++) {
+    if (plies > 24) {
+      // Safety net (should not trigger at these bag sizes): fall back to
+      // the damped leave differential.
+      const scaleH = Math.min(1, bagArr.length / 7);
+      margin += scaleH *
+        (leaveValueFromCounts(tileCounts(myRack)) - leaveValueFromCounts(tileCounts(oppRack)));
+      break;
+    }
+    state.bag = bagArr; // consumers only read its length
+    const mover = side === 1 ? oppRack : myRack;
+    const mv = await findBestStaticMove(mover);
+    if (!mv) {
+      if (++passes >= 2) {
+        margin += rackValueOf(oppRack) - rackValueOf(myRack);
+        break;
+      }
+    } else {
+      passes = 0;
+      applyToBoard(mv.placements);
+      applied.push(mv.placements);
+      const newRack = rackWithout(mover, mv.placements);
+      if (side === 1) { oppRack = newRack; margin -= mv.score; }
+      else { myRack = newRack; margin += mv.score; }
+      if (newRack.length === 0 && bagArr.length === 0) {
+        const bonus = 2 * rackValueOf(side === 1 ? myRack : oppRack);
+        margin += side === 1 ? -bonus : bonus;
+        break;
+      }
+      draw(newRack);
+    }
+    side = 1 - side;
+  }
+
+  for (let i = applied.length - 1; i >= 0; i--) removeFromBoard(applied[i]);
+  return margin;
+}
 
 let inSimulation = false; // opponent replies inside a sim use static play
 
@@ -1726,6 +1786,7 @@ async function findBestSimMove(rack) {
   inSimulation = true;
   const K = cands.length;
   const M = worlds.length;
+  const toTerminal = realBag.length < SIM.TERMINAL_BAG;
   const vals = Array.from({ length: K }, () => []); // vals[candidate][world]
   const alive = new Array(K).fill(true);
   const kept = cands.map(c => rackWithout(rack, c.m.placements));
@@ -1739,6 +1800,14 @@ async function findBestSimMove(rack) {
         const m = cands[ci].m;
         const myKept = kept[ci];
         applyToBoard(m.placements);
+        if (toTerminal) {
+          // Near the endgame the sampled world is cheap to finish: play
+          // it out and score the exact final margin — no horizon
+          // heuristic, and the leave taper plays no evaluation role.
+          vals[ci].push(await simPlayoutValue(m.score, myKept, world, oppSize));
+          removeFromBoard(m.placements);
+          continue;
+        }
         const oppRack = world.slice(0, oppSize);
         let cursor = oppSize;
         const myDraw = Math.min(7 - myKept.length, world.length - cursor);
