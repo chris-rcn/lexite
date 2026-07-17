@@ -71,3 +71,24 @@ tiles and draw order from each seat, and the same base seed always
 reproduces the same match. The engines are deterministic, so an A-vs-A
 match produces exactly mirrored scores — a quick way to sanity-check the
 harness itself.
+
+If a `leaves.js` sits next to an engine file, the harness loads it as
+that engine's leave model — an engine version and its weights travel as
+a pair, so put each version being compared in its own directory.
+
+## Rack-Leave Model
+
+The engine picks the move maximizing `score + value(tiles kept)` rather
+than raw score, so it stops dumping blanks and S's for marginal points
+or keeping unplayable racks. The weights live in `leaves.js` (per-letter
+values, duplicate penalties, leave size, vowel/consonant imbalance,
+Q-without-U) and are trained by regression on seeded self-play data:
+
+```bash
+node tools/train-leaves.js            # rewrites leaves.js (~5 min)
+# Options: --samples N --games G --seed S --jobs J --out FILE
+```
+
+The leave bonus fades out as the bag empties (kept tiles have no future
+with nothing left to draw), so endgame selection is pure greedy. If
+`leaves.js` is missing the engine falls back to greedy entirely.

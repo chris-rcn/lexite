@@ -1257,13 +1257,55 @@ function computeCrossMask(r, c, moveIsHoriz) {
 }
 
 // ============================================================
+// LEAVE EVALUATION
+// ============================================================
+
+// Value of the tiles kept after playing `placements` from `rack`, using
+// weights trained by tools/train-leaves.js (loaded from leaves.js). When
+// no weights are loaded the value is 0 and selection is pure greedy.
+function leaveValue(rack, placements) {
+  if (typeof LEAVE_WEIGHTS === 'undefined' || !LEAVE_WEIGHTS) return 0;
+  const counts = {};
+  for (const t of rack) {
+    const k = t.isBlank ? '?' : t.letter.toUpperCase();
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  for (const p of placements) {
+    const k = p.isBlank ? '?' : p.letter.toUpperCase();
+    counts[k]--;
+  }
+
+  const W = LEAVE_WEIGHTS;
+  let val = 0, size = 0, vowels = 0, consonants = 0;
+  let hasQ = false, hasU = false;
+  for (const [k, n] of Object.entries(counts)) {
+    if (n <= 0) continue;
+    size += n;
+    val += (W.letter[k] || 0) * n + (W.duplicate[k] || 0) * (n - 1);
+    if (k === 'Q') hasQ = true;
+    if (k === 'U') hasU = true;
+    if (k !== '?') {
+      if ('AEIOU'.includes(k)) vowels += n; else consonants += n;
+    }
+  }
+  val += W.size * size;
+  val += W.imbalance * Math.abs(vowels - consonants);
+  if (hasQ && !hasU) val += W.qNoU;
+  return val;
+}
+
+// ============================================================
 // COMPUTER MOVE ENGINE
 // ============================================================
 
-// Find the highest-scoring legal move for the given rack.
+// Find the best legal move for the given rack: highest score plus the
+// value of the rack it leaves behind.
 async function findBestMove(rack) {
   ensureTrie();
-  let bestScore = -1;
+  // The kept rack only has a future while there are tiles to draw into —
+  // as the bag runs out, selection fades back to raw score.
+  const leaveScale = Math.min(1, state.bag.length / 7);
+  let bestVal = -Infinity;
   let bestMove = null;
 
   for (let i = 0; i < 15; i++) {
@@ -1273,15 +1315,17 @@ async function findBestMove(rack) {
     for (const isHoriz of [true, false]) {
       const moves = findMovesInLine(i, isHoriz, rack);
       for (const m of moves) {
-        if (m.score > bestScore) {
-          bestScore = m.score;
+        if (m.score <= 0) continue;
+        const val = m.score + (leaveScale > 0 ? leaveScale * leaveValue(rack, m.placements) : 0);
+        if (val > bestVal) {
+          bestVal = val;
           bestMove = m;
         }
       }
     }
   }
 
-  return bestScore > 0 ? bestMove : null;
+  return bestMove;
 }
 
 // Generate all legal moves in one line via the trie (Appel–Jacobson):

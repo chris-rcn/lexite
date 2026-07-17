@@ -118,6 +118,10 @@ function loadWords() {
 
 function loadEngine(file, words) {
   const code = fs.readFileSync(file, 'utf8');
+  // A leaves.js next to the engine file supplies its leave-model weights
+  // (an engine version and its trained weights travel as a pair).
+  const leavesPath = path.join(path.dirname(path.resolve(file)), 'leaves.js');
+  const leavesCode = fs.existsSync(leavesPath) ? fs.readFileSync(leavesPath, 'utf8') : null;
   // Minimal browser-global stubs so game.js evaluates headlessly. All DOM
   // access lives inside functions the harness never calls.
   const sandbox = {
@@ -128,6 +132,7 @@ function loadEngine(file, words) {
     console,
   };
   vm.createContext(sandbox);
+  if (leavesCode) vm.runInContext(leavesCode, sandbox, { filename: leavesPath });
   vm.runInContext(code, sandbox, { filename: file });
 
   // Install the dictionary directly (loadWordList needs fetch), and define
@@ -148,6 +153,8 @@ function loadEngine(file, words) {
       const pos = JSON.parse(positionJson);
       state.board = pos.board;
       state.isFirstMove = pos.isFirstMove;
+      // Only the bag's length is read (leave-value damping)
+      state.bag = new Array(pos.bagCount || 0).fill('?');
       if (typeof findBestMove === 'function') return findBestMove(pos.rack);
       // Pre-refactor engine API
       state.computerRack = pos.rack;
@@ -158,11 +165,12 @@ function loadEngine(file, words) {
   return {
     file,
     stats: { moves: 0, ms: 0 },
-    async bestMove(board, rack, isFirstMove) {
+    async bestMove(board, rack, isFirstMove, bagCount) {
       const positionJson = JSON.stringify({
         board,
         rack: rack.map(t => ({ letter: t.letter, isBlank: t.isBlank })),
         isFirstMove,
+        bagCount,
       });
       const t0 = Date.now();
       const move = await sandbox.__bestMove(positionJson);
@@ -182,8 +190,10 @@ function rackValue(rack) {
 }
 
 // engines: [engine for seat 0 (moves first), engine for seat 1]
+// onPosition, if given, is called with (board, bag, isFirstMove) before
+// every engine move — used by tools/train-leaves.js to harvest positions.
 // Returns { scores: [seat0, seat1], moves, reason }
-async function playGame(engines, initialBag, verbose, label) {
+async function playGame(engines, initialBag, verbose, label, onPosition) {
   const bag = initialBag.slice();
   const board = Array.from({ length: 15 }, () => new Array(15).fill(null));
   const racks = [[], []];
@@ -203,7 +213,8 @@ async function playGame(engines, initialBag, verbose, label) {
   let reason;
 
   for (;;) {
-    const move = await engines[seat].bestMove(board, racks[seat], isFirstMove);
+    if (onPosition) onPosition(board, bag, isFirstMove);
+    const move = await engines[seat].bestMove(board, racks[seat], isFirstMove, bag.length);
     moves++;
     if (!move) {
       // No exchanges exist, so once both engines pass the position is
@@ -366,4 +377,8 @@ async function main() {
   console.log(`  Avg moves per game: ${(totals.gameMoves / games).toFixed(1)}`);
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+module.exports = { TILE_DATA, LETTER_VALUES, mulberry32, buildSeededBag, loadWords, loadEngine, playGame };
+
+if (require.main === module) {
+  main().catch(e => { console.error(e); process.exit(1); });
+}
