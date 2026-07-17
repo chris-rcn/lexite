@@ -1873,23 +1873,44 @@ function tileCounts(tiles) {
 }
 
 // The best tiles to keep when exchanging: the proper subset of the rack
-// (at least one tile goes back) with the highest static leave value.
-// A pool-aware variant (Monte Carlo over the unseen pool) was tried and
-// removed — it never beat this static ranking and pool-awareness proved
-// redundant with simulation. Returns { keep, tiles } or null when no
-// leave model is loaded.
+// (at least one tile goes back) with the highest pool-aware leave value.
+// Each keep is scored by its static leave value plus an EXACT single-tile
+// pool correction — sum_t (poolFrac[t] - globalFrac[t]) * leaveValue(keep+t)
+// — a closed 27-term sum over one replacement tile, so a depleted or
+// enriched pool shifts which keep wins without any Monte Carlo (no
+// sampling noise) and staying within the leave model's domain. Unlike a
+// move's leave, this keep choice is never re-examined by simulation (the
+// sim only evaluates the chosen keep), so the pool-awareness is not
+// redundant with it. Returns { keep, tiles } or null with no leave model.
 function bestExchangeKeep(rack) {
   if (!leaveTables) return null;
   const n = rack.length;
   if (n === 0) return null;
-  const rackCodes = rack.map(t => t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65);
+  const code = t => t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65;
+  const rackCodes = rack.map(code);
+  // Pool deviation: actual unseen-pool fractions minus the global
+  // distribution the leave model was trained on (full dist minus rack).
+  const actual = deriveOpponentRack(rack);
+  const ac = new Float64Array(27); for (const t of actual) ac[code(t)]++;
+  const rem = {}; for (const [L, [c]] of Object.entries(TILE_DATA)) rem[L] = c;
+  for (const t of rack) rem[t.isBlank ? '?' : t.letter.toUpperCase()]--;
+  const gc = new Float64Array(27); let gt = 0;
+  for (const [L, c] of Object.entries(rem)) { gc[L === '?' ? 26 : L.charCodeAt(0) - 65] = c; gt += c; }
+  const at = actual.length || 1;
+  const dev = new Float64Array(27);
+  for (let i = 0; i < 27; i++) dev[i] = ac[i] / at - gc[i] / gt;
+
   const counts = new Int32Array(27);
   let bestMask = 0;
   let bestVal = -Infinity;
   for (let mask = 0; mask < (1 << n) - 1; mask++) { // masks exclude keep-all
     counts.fill(0);
     for (let i = 0; i < n; i++) if (mask & (1 << i)) counts[rackCodes[i]]++;
-    const v = leaveValueFromCounts(counts);
+    let v = leaveValueFromCounts(counts);
+    for (let t = 0; t < 27; t++) {
+      if (dev[t] === 0) continue;
+      counts[t]++; v += dev[t] * leaveValueFromCounts(counts); counts[t]--;
+    }
     if (v > bestVal) { bestVal = v; bestMask = mask; }
   }
   const keep = [], tiles = [];
