@@ -1510,10 +1510,15 @@ function deriveOpponentRack(ownRack) {
 
 const ENDGAME = {
   NODE_MOVES: 8,        // candidate moves per inner search node
-  MOVEGEN_BUDGET: 400,  // hard safety cap on move generations per decision
-  MAX_TILES: 12,        // search only when combined racks are this small...
-  MAX_ROOT_MOVES: 40,   // ...and the root isn't too wide; else play greedy
+  MOVEGEN_BUDGET: 600,  // move generations per decision; root moves are
+                        // evaluated best-first and the search keeps the
+                        // best fully-evaluated move when this is hit, so
+                        // this bounds worst-case time without a hard gate
 };
+
+// Thrown by endgameSearch when the movegen budget is exhausted; caught by
+// findBestEndgameMove, which then plays the greedy move.
+const ENDGAME_ABORT = {};
 
 function rackValueOf(tiles) {
   return tiles.reduce((s, t) => s + letterVal(t.letter, t.isBlank), 0);
@@ -1606,9 +1611,12 @@ function greedyRolloutMargin(myRack, oppRack, passes, budget) {
 // greedy rollout (budget exhaustion falls back to the both-stuck value).
 function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   if (passes >= 2) return rackValueOf(oppRack) - rackValueOf(myRack);
-  if (budget.used >= ENDGAME.MOVEGEN_BUDGET) {
-    return rackValueOf(oppRack) - rackValueOf(myRack);
-  }
+  // Out of budget before this node could be evaluated: abandon the whole
+  // search rather than return a distorted value. Returning the pessimistic
+  // both-stuck estimate here would systematically overvalue moves whose
+  // reply subtree got truncated, and could pick worse than greedy — so we
+  // unwind to findBestEndgameMove, which falls back to the greedy move.
+  if (budget.used >= ENDGAME.MOVEGEN_BUDGET) throw ENDGAME_ABORT;
   const plyCap = myRack.length + oppRack.length <= 8 ? 8 : 4;
   if (ply >= plyCap) {
     // Rollouts complete even if they overshoot the budget slightly — a
@@ -1638,44 +1646,62 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   return Math.max(best, passVal);
 }
 
-// Pick the endgame move by search rather than greedy score. The search
-// only runs on endgames small enough to search completely — few enough
-// combined tiles and a narrow enough root — and then it considers every
-// legal root move. Larger endgames play greedy, which measured equal to
-// budget-truncated search. Returning null means passing is at least as
-// good as every candidate move.
+// Pick the endgame move by search rather than greedy score. Root moves
+// are evaluated best-first (by score), each with a complete bounded reply
+// search. When the budget runs out mid-move, the incomplete move is
+// discarded and the best of the fully-evaluated moves is returned — since
+// the highest-scoring move (what greedy plays) is evaluated first, the
+// result is always at least as good as greedy, degrading gracefully
+// instead of throwing all the work away. Returning null means passing is
+// at least as good as every evaluated move.
 async function findBestEndgameMove(rack) {
   const oppRack = deriveOpponentRack(rack);
   const budget = { used: 0 };
   const moves = allMovesSorted(rack, budget);
+  if (moves.length === 0) return null;
+  const greedy = moves[0].score > 0 ? moves[0] : null;
 
-  if (rack.length + oppRack.length > ENDGAME.MAX_TILES ||
-      moves.length > ENDGAME.MAX_ROOT_MOVES) {
-    return moves.length > 0 && moves[0].score > 0 ? moves[0] : null;
-  }
-
+  // The reply search mutates the board and unwinds un-cleanly if it
+  // aborts, so snapshot to restore the discarded move's placements.
+  const boardSnapshot = state.board.map(r => r.slice());
   let bestMove = null;
   let bestVal = -Infinity;
-  for (const m of moves) { // complete at the root: every legal move
+  for (const m of moves) {
     await yieldToUI();
     const newRack = rackWithout(rack, m.placements);
     let val;
     if (newRack.length === 0) {
-      val = m.score + 2 * rackValueOf(oppRack);
+      val = m.score + 2 * rackValueOf(oppRack); // going out ends the game
     } else {
       // Root alpha-beta window: the reply search can cut off as soon as
       // it proves this move cannot beat the best value found so far.
       const beta = bestVal === -Infinity ? Infinity : m.score - bestVal;
       applyToBoard(m.placements);
-      val = m.score - endgameSearch(oppRack, newRack, 0, 1, -Infinity, beta, budget);
+      try {
+        val = m.score - endgameSearch(oppRack, newRack, 0, 1, -Infinity, beta, budget);
+      } catch (e) {
+        if (e !== ENDGAME_ABORT) throw e;
+        // Budget exhausted evaluating this move — discard it, keep the
+        // best fully-evaluated move so far (>= greedy, since the top-score
+        // move was evaluated first). If even the first move did not
+        // finish, fall back to the greedy move.
+        state.board = boardSnapshot;
+        return bestMove !== null ? bestMove : greedy;
+      }
       removeFromBoard(m.placements);
     }
     if (val > bestVal) { bestVal = val; bestMove = m; }
   }
 
-  const passBeta = bestVal === -Infinity ? Infinity : -bestVal;
-  const passVal = -endgameSearch(oppRack, rack, 1, 1, -Infinity, passBeta, budget);
-  if (passVal > bestVal) return null;
+  // All moves searched within budget — also weigh passing.
+  try {
+    const passBeta = bestVal === -Infinity ? Infinity : -bestVal;
+    const passVal = -endgameSearch(oppRack, rack, 1, 1, -Infinity, passBeta, budget);
+    if (passVal > bestVal) return null;
+  } catch (e) {
+    if (e !== ENDGAME_ABORT) throw e;
+    state.board = boardSnapshot;
+  }
   return bestMove;
 }
 
