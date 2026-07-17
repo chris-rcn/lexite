@@ -415,11 +415,6 @@ main {
   padding-right: 8px;
 }
 
-/* Play Word shares its row with Swap Tiles, slightly emphasized */
-.action-row #btn-play {
-  flex: 1.5;
-}
-
 .btn-primary {
   background: #2a7a3a;
   color: #fff;
