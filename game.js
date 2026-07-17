@@ -1318,9 +1318,10 @@ function deriveOpponentRack(ownRack) {
 }
 
 const ENDGAME = {
-  ROOT_MOVES: 12,      // candidate moves considered at the root
-  NODE_MOVES: 8,       // candidate moves per inner search node
-  MOVEGEN_BUDGET: 300, // full-board move generations per decision
+  NODE_MOVES: 8,        // candidate moves per inner search node
+  MOVEGEN_BUDGET: 400,  // hard safety cap on move generations per decision
+  MAX_TILES: 12,        // search only when combined racks are this small...
+  MAX_ROOT_MOVES: 40,   // ...and the root isn't too wide; else play greedy
 };
 
 function rackValueOf(tiles) {
@@ -1446,31 +1447,43 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   return Math.max(best, passVal);
 }
 
-// Pick the endgame move by search rather than greedy score. Returning
-// null means passing is at least as good as every candidate move.
+// Pick the endgame move by search rather than greedy score. The search
+// only runs on endgames small enough to search completely — few enough
+// combined tiles and a narrow enough root — and then it considers every
+// legal root move. Larger endgames play greedy, which measured equal to
+// budget-truncated search. Returning null means passing is at least as
+// good as every candidate move.
 async function findBestEndgameMove(rack) {
   const oppRack = deriveOpponentRack(rack);
   const budget = { used: 0 };
-  const moves = allMovesSorted(rack, budget).slice(0, ENDGAME.ROOT_MOVES);
-  if (moves.length === 0) return null;
+  const moves = allMovesSorted(rack, budget);
+
+  if (rack.length + oppRack.length > ENDGAME.MAX_TILES ||
+      moves.length > ENDGAME.MAX_ROOT_MOVES) {
+    return moves.length > 0 && moves[0].score > 0 ? moves[0] : null;
+  }
 
   let bestMove = null;
   let bestVal = -Infinity;
-  for (const m of moves) {
+  for (const m of moves) { // complete at the root: every legal move
     await yieldToUI();
     const newRack = rackWithout(rack, m.placements);
     let val;
     if (newRack.length === 0) {
       val = m.score + 2 * rackValueOf(oppRack);
     } else {
+      // Root alpha-beta window: the reply search can cut off as soon as
+      // it proves this move cannot beat the best value found so far.
+      const beta = bestVal === -Infinity ? Infinity : m.score - bestVal;
       applyToBoard(m.placements);
-      val = m.score - endgameSearch(oppRack, newRack, 0, 1, -Infinity, Infinity, budget);
+      val = m.score - endgameSearch(oppRack, newRack, 0, 1, -Infinity, beta, budget);
       removeFromBoard(m.placements);
     }
     if (val > bestVal) { bestVal = val; bestMove = m; }
   }
 
-  const passVal = -endgameSearch(oppRack, rack, 1, 1, -Infinity, Infinity, budget);
+  const passBeta = bestVal === -Infinity ? Infinity : -bestVal;
+  const passVal = -endgameSearch(oppRack, rack, 1, 1, -Infinity, passBeta, budget);
   if (passVal > bestVal) return null;
   return bestMove;
 }
