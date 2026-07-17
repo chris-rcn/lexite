@@ -85,9 +85,24 @@ values, duplicate penalties, leave size, vowel/consonant imbalance,
 Q-without-U) and are trained by regression on seeded self-play data:
 
 ```bash
-node tools/train-leaves.js            # rewrites leaves.js (~5 min)
-# Options: --samples N --games G --seed S --jobs J --out FILE
+node tools/train-leaves.js            # records new samples, refits leaves.js
+# Options: --samples N --games G --seed S --jobs J --out FILE --data FILE
 ```
+
+Every sampled evaluation is retained in `data/leave-samples.jsonl`
+(one `{"l":"<leave>","y":<score>}` line each, with `{"meta":...}` run
+markers), because the engine evaluations are the expensive part of
+training. That makes iteration cheap:
+
+```bash
+node tools/train-leaves.js --fit-only            # refit from recorded data, < 1 s
+node tools/train-leaves.js --record-only --seed 7  # grow the dataset (use a fresh seed!)
+```
+
+Use `--fit-only` after changing leave features or the regression; a
+normal run appends new samples and refits on the whole file. Always give
+`--record-only` runs a seed not previously recorded, or you will append
+duplicate rows.
 
 The leave bonus fades out as the bag empties (kept tiles have no future
 with nothing left to draw), so endgame selection is pure greedy. If

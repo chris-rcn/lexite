@@ -1,21 +1,34 @@
 #!/usr/bin/env node
-// Train the rack-leave model and write it to leaves.js.
+// Train the rack-leave model (leaves.js) and record its training data.
 //
 // Usage:
 //   node tools/train-leaves.js [--samples N] [--games G] [--seed S]
-//                              [--jobs J] [--out leaves.js]
+//                              [--jobs J] [--out leaves.js] [--data FILE]
+//                              [--fit-only | --record-only]
 //
 // Defaults: --samples 60000 --games 16 --seed 1 --jobs (cpus, max 4)
+//           --data data/leave-samples.jsonl
+//
+// Every sampled evaluation is appended to the data file as one JSON line
+// {"l":"<sorted leave letters>","y":<best next-move score>}, with a
+// {"meta":...} line marking each recording run. The engine evaluations
+// are the expensive part of training (~3 min per 60k), so retaining the
+// rows makes model tweaks cheap:
+//   --fit-only     refit weights from the recorded data (< 1 s); use
+//                  after changing features or the regression, as long as
+//                  features remain a function of the leave alone
+//   --record-only  sample and append more data (use a FRESH --seed, or
+//                  you will re-record identical rows) without refitting
+// A normal run records new rows and then fits on the ENTIRE data file.
 //
 // Method: harvest board positions from seeded self-play, then for each
-// training sample pick a random position, draw a random 7-tile rack from
-// its unseen pool — the first 0-6 tiles of the draw are labeled the
-// "leave" — and measure the best next-move score a plain greedy engine
-// achieves with that rack. A ridge regression of score on leave features
-// (per-letter counts, duplicate counts, leave size, vowel/consonant
-// imbalance, Q-without-U) then estimates each kept tile's marginal
-// contribution to next-turn score. The whole pipeline is seeded and
-// deterministic; sampling fans out over worker processes.
+// sample pick a random position, draw a random 7-tile rack from its
+// unseen pool — the first 0-6 tiles of the draw are the "leave" — and
+// measure the best next-move score a plain greedy engine achieves with
+// that rack. A ridge regression of score on leave features (per-letter
+// counts, duplicate counts, leave size, vowel/consonant imbalance,
+// Q-without-U) estimates each kept tile's marginal contribution. The
+// pipeline is seeded and deterministic; sampling fans out over workers.
 //
 // The evaluation engine is a copy of game.js placed in a directory with
 // no leaves.js, so training always measures the greedy engine, never an
@@ -39,6 +52,8 @@ function parseArgs(argv) {
     samples: 60000, games: 16, seed: 1,
     jobs: Math.max(1, Math.min(4, os.cpus().length - 1)),
     out: path.resolve(__dirname, '..', 'leaves.js'),
+    data: path.resolve(__dirname, '..', 'data', 'leave-samples.jsonl'),
+    fitOnly: false, recordOnly: false,
     worker: null,
   };
   for (let i = 2; i < argv.length; i++) {
@@ -48,17 +63,24 @@ function parseArgs(argv) {
     else if (arg === '--seed') opts.seed = parseInt(argv[++i], 10);
     else if (arg === '--jobs') opts.jobs = parseInt(argv[++i], 10);
     else if (arg === '--out') opts.out = path.resolve(process.cwd(), argv[++i]);
+    else if (arg === '--data') opts.data = path.resolve(process.cwd(), argv[++i]);
+    else if (arg === '--fit-only') opts.fitOnly = true;
+    else if (arg === '--record-only') opts.recordOnly = true;
     else if (arg === '--worker') opts.worker = argv[++i]; // internal
     else { console.error(`Unknown argument: ${arg}`); process.exit(2); }
+  }
+  if (opts.fitOnly && opts.recordOnly) {
+    console.error('--fit-only and --record-only are mutually exclusive.');
+    process.exit(2);
   }
   return opts;
 }
 
-// leaveChars: array of 'A'-'Z' / '?' — must mirror leaveValue() in game.js
-function leaveFeatures(leaveChars) {
+// leave: string of 'A'-'Z' / '?' chars — must mirror leaveValue() in game.js
+function leaveFeatures(leave) {
   const x = new Float64Array(DIM);
   const counts = {};
-  for (const ch of leaveChars) counts[ch] = (counts[ch] || 0) + 1;
+  for (const ch of leave) counts[ch] = (counts[ch] || 0) + 1;
   let vowels = 0, consonants = 0, hasQ = false, hasU = false, size = 0;
   LETTERS.forEach((ch, i) => {
     const n = counts[ch] || 0;
@@ -80,7 +102,7 @@ function leaveFeatures(leaveChars) {
 }
 
 // ---------------------------------------------------------------
-// Worker: accumulate partial normal-equation sums over its samples
+// Worker: evaluate its share of samples, return raw rows
 // ---------------------------------------------------------------
 
 async function runWorkerJob(spec) {
@@ -88,10 +110,7 @@ async function runWorkerJob(spec) {
   const engine = loadEngine(spec.engineFile, loadWords());
   const rng = mulberry32(spec.seed);
 
-  const xtx = new Float64Array(DIM * DIM);
-  const xty = new Float64Array(DIM);
-  let sumY = 0;
-
+  const rows = [];
   for (let s = 0; s < spec.count; s++) {
     const pos = positions[Math.floor(rng() * positions.length)];
     const pool = pos.bag.slice();
@@ -101,29 +120,17 @@ async function runWorkerJob(spec) {
       [pool[k], pool[j]] = [pool[j], pool[k]];
     }
     const l = Math.floor(rng() * 7); // leave size 0..6
-    const leave = pool.slice(0, l).map(ch => ch === '?' ? '?' : ch.toUpperCase());
+    const leave = pool.slice(0, l).map(ch => ch.toUpperCase()).sort().join('');
     const rack = pool.slice(0, 7).map(ch => ({ letter: ch, isBlank: ch === '?' }));
 
     const move = await engine.bestMove(pos.board, rack, pos.isFirstMove, pos.bag.length - 7);
-    const y = move ? move.score : 0;
-
-    const x = leaveFeatures(leave);
-    for (let i = 0; i < DIM; i++) {
-      if (x[i] === 0) continue;
-      xty[i] += x[i] * y;
-      for (let j = i; j < DIM; j++) xtx[i * DIM + j] += x[i] * x[j];
-    }
-    sumY += y;
+    rows.push({ l: leave, y: move ? move.score : 0 });
   }
-
-  process.stdout.write(JSON.stringify({
-    n: spec.count, sumY,
-    xtx: Array.from(xtx), xty: Array.from(xty),
-  }));
+  process.stdout.write(JSON.stringify({ rows }));
 }
 
 // ---------------------------------------------------------------
-// Ridge solve (normal equations, Gaussian elimination w/ pivoting)
+// Fit: ridge regression over rows (normal equations)
 // ---------------------------------------------------------------
 
 function solveRidge(xtx, xty, dim, lambda) {
@@ -159,22 +166,92 @@ function solveRidge(xtx, xty, dim, lambda) {
   return w;
 }
 
+function fitRows(rows) {
+  const xtx = new Float64Array(DIM * DIM);
+  const xty = new Float64Array(DIM);
+  let sumY = 0;
+  for (const row of rows) {
+    const x = leaveFeatures(row.l);
+    for (let i = 0; i < DIM; i++) {
+      if (x[i] === 0) continue;
+      xty[i] += x[i] * row.y;
+      for (let j = i; j < DIM; j++) xtx[i * DIM + j] += x[i] * x[j];
+    }
+    sumY += row.y;
+  }
+  const w = solveRidge(xtx, xty, DIM, 1.0);
+  const round = v => Math.round(v * 1000) / 1000;
+  const letter = {}, duplicate = {};
+  LETTERS.forEach((ch, i) => {
+    letter[ch] = round(w[i]);
+    duplicate[ch] = round(w[27 + i]);
+  });
+  return {
+    weights: {
+      letter, duplicate,
+      size: round(w[54]),
+      imbalance: round(w[55]),
+      qNoU: round(w[56]),
+    },
+    n: rows.length,
+    meanY: sumY / rows.length,
+  };
+}
+
+function readRows(dataFile) {
+  if (!fs.existsSync(dataFile)) return [];
+  const rows = [];
+  for (const line of fs.readFileSync(dataFile, 'utf8').split('\n')) {
+    if (!line) continue;
+    const obj = JSON.parse(line);
+    if (obj.meta) continue; // provenance marker, not a sample
+    rows.push(obj);
+  }
+  return rows;
+}
+
+function emitWeights(outFile, fit, dataFile) {
+  const banner =
+`// Generated by tools/train-leaves.js — do not edit by hand.
+// Rack-leave weights: expected next-move score contribution of kept tiles.
+// Fit on ${fit.n} samples from ${path.basename(dataFile)} (mean next-move score ${fit.meanY.toFixed(1)}).
+const LEAVE_WEIGHTS = `;
+  fs.writeFileSync(outFile, banner + JSON.stringify(fit.weights, null, 2) + ';\n');
+  const w = fit.weights;
+  console.log(`Wrote ${outFile}`);
+  console.log(`Spot checks — blank: ${w.letter['?']}, S: ${w.letter.S}, Q: ${w.letter.Q},` +
+    ` E: ${w.letter.E}, V: ${w.letter.V}, dup E: ${w.duplicate.E},` +
+    ` imbalance: ${w.imbalance}, Q-no-U: ${w.qNoU}`);
+}
+
 // ---------------------------------------------------------------
-// Main: harvest positions, fan out sampling, fit, emit leaves.js
+// Main
 // ---------------------------------------------------------------
 
 async function main() {
   const opts = parseArgs(process.argv);
   if (opts.worker) return runWorkerJob(JSON.parse(opts.worker));
-
   const t0 = Date.now();
+
+  if (opts.fitOnly) {
+    const rows = readRows(opts.data);
+    if (rows.length === 0) {
+      console.error(`No samples in ${opts.data} — run without --fit-only first.`);
+      process.exit(1);
+    }
+    console.log(`Refitting on ${rows.length} recorded samples...`);
+    emitWeights(opts.out, fitRows(rows), opts.data);
+    console.log(`Total ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    return;
+  }
+
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lexite-train-'));
   // Evaluation engine: game.js copied where no leaves.js can sit beside it
   const engineFile = path.join(tmpDir, 'game.js');
   fs.copyFileSync(path.resolve(__dirname, '..', 'game.js'), engineFile);
 
   // 1. Harvest positions from seeded greedy self-play
-  console.log(`Harvesting positions from ${opts.games} self-play games...`);
+  console.log(`Harvesting positions from ${opts.games} self-play games (seed ${opts.seed})...`);
   const words = loadWords();
   const engine = loadEngine(engineFile, words);
   const positions = [];
@@ -206,49 +283,27 @@ async function main() {
   }
   const partials = await Promise.all(specs.map(spec => new Promise((resolve, reject) => {
     execFile(process.execPath, [__filename, '--worker', JSON.stringify(spec)],
-      { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      { maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
         if (err) return reject(err);
         resolve(JSON.parse(stdout));
       });
   })));
+  const newRows = partials.flatMap(p => p.rows);
 
-  const xtx = new Float64Array(DIM * DIM);
-  const xty = new Float64Array(DIM);
-  let n = 0, sumY = 0;
-  for (const p of partials) {
-    n += p.n; sumY += p.sumY;
-    for (let i = 0; i < xtx.length; i++) xtx[i] += p.xtx[i];
-    for (let i = 0; i < xty.length; i++) xty[i] += p.xty[i];
+  // 3. Record: append a provenance marker plus the raw rows
+  fs.mkdirSync(path.dirname(opts.data), { recursive: true });
+  const runMeta = { meta: { seed: opts.seed, samples: newRows.length, games: opts.games } };
+  fs.appendFileSync(opts.data,
+    JSON.stringify(runMeta) + '\n' + newRows.map(r => JSON.stringify(r)).join('\n') + '\n');
+  console.log(`  Recorded ${newRows.length} samples to ${opts.data} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+
+  // 4. Fit on the entire recorded dataset (unless only recording)
+  if (!opts.recordOnly) {
+    const rows = readRows(opts.data);
+    console.log(`Fitting on all ${rows.length} recorded samples...`);
+    emitWeights(opts.out, fitRows(rows), opts.data);
   }
-  console.log(`  ${n} samples, mean next-move score ${(sumY / n).toFixed(1)} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-
-  // 3. Fit
-  const w = solveRidge(xtx, xty, DIM, 1.0);
-  const round = v => Math.round(v * 1000) / 1000;
-  const letter = {}, duplicate = {};
-  LETTERS.forEach((ch, i) => {
-    letter[ch] = round(w[i]);
-    duplicate[ch] = round(w[27 + i]);
-  });
-  const weights = {
-    letter, duplicate,
-    size: round(w[54]),
-    imbalance: round(w[55]),
-    qNoU: round(w[56]),
-  };
-
-  // 4. Emit
-  const banner =
-`// Generated by tools/train-leaves.js — do not edit by hand.
-// Rack-leave weights: expected next-move score contribution of kept tiles.
-// Trained on ${n} samples from ${opts.games} self-play games, base seed ${opts.seed}.
-const LEAVE_WEIGHTS = `;
-  fs.writeFileSync(opts.out, banner + JSON.stringify(weights, null, 2) + ';\n');
-  console.log(`\nWrote ${opts.out}`);
-  console.log(`Spot checks — blank: ${letter['?']}, S: ${letter.S}, Q: ${letter.Q},` +
-    ` E: ${letter.E}, V: ${letter.V}, dup E: ${duplicate.E}, dup V: ${duplicate.V},` +
-    ` imbalance: ${weights.imbalance}, Q-no-U: ${weights.qNoU}`);
-  console.log(`Total ${(((Date.now() - t0)) / 1000).toFixed(1)}s`);
+  console.log(`Total ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
 }
