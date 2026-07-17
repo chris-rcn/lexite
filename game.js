@@ -1294,13 +1294,152 @@ function leaveValue(rack, placements) {
 }
 
 // ============================================================
+// ENDGAME SEARCH (empty bag)
+// ============================================================
+
+// With the bag empty the endgame is perfect-information: the opponent's
+// rack is exactly the unseen tiles, so it can be derived from the full
+// tile distribution minus the board and our own rack.
+function deriveOpponentRack(ownRack) {
+  const remaining = {};
+  for (const [letter, [count]] of Object.entries(TILE_DATA)) remaining[letter] = count;
+  for (let r = 0; r < 15; r++) {
+    for (let c = 0; c < 15; c++) {
+      const cell = state.board[r][c];
+      if (cell) remaining[cell.isBlank ? '?' : cell.letter.toUpperCase()]--;
+    }
+  }
+  for (const t of ownRack) remaining[t.isBlank ? '?' : t.letter.toUpperCase()]--;
+  const opp = [];
+  for (const [k, n] of Object.entries(remaining)) {
+    for (let i = 0; i < n; i++) opp.push({ letter: k, isBlank: k === '?' });
+  }
+  return opp;
+}
+
+const ENDGAME = {
+  ROOT_MOVES: 12,      // candidate moves considered at the root
+  NODE_MOVES: 8,       // candidate moves per inner search node
+  MOVEGEN_BUDGET: 120, // full-board move generations per decision
+};
+
+function rackValueOf(tiles) {
+  return tiles.reduce((s, t) => s + letterVal(t.letter, t.isBlank), 0);
+}
+
+// All legal moves for a rack on the current board, best score first.
+// Ties keep the canonical per-line generation order, so the search stays
+// deterministic and mirrored matches stay exact.
+function allMovesSorted(rack, budget) {
+  budget.used++;
+  const moves = [];
+  for (let i = 0; i < 15; i++) {
+    for (const isHoriz of [true, false]) {
+      for (const m of findMovesInLine(i, isHoriz, rack)) moves.push(m);
+    }
+  }
+  return moves
+    .map((m, idx) => ({ m, idx }))
+    .sort((a, b) => (b.m.score - a.m.score) || (a.idx - b.idx))
+    .map(x => x.m);
+}
+
+function applyToBoard(placements) {
+  for (const p of placements) {
+    state.board[p.row][p.col] = { letter: p.letter, isBlank: p.isBlank, displayLetter: p.letter };
+  }
+}
+
+function removeFromBoard(placements) {
+  for (const p of placements) state.board[p.row][p.col] = null;
+}
+
+function rackWithout(rack, placements) {
+  const out = rack.slice();
+  for (const p of placements) {
+    const idx = out.findIndex(t =>
+      p.isBlank ? t.isBlank : (!t.isBlank && t.letter.toLowerCase() === p.letter.toLowerCase())
+    );
+    out.splice(idx, 1);
+  }
+  return out;
+}
+
+// Negamax with alpha-beta over the remaining playout. Returns the best
+// achievable margin (side-to-move future points minus opponent future
+// points) using the game's real terminal rules: going out banks the
+// opponent's rack value twice (endGame credits it to the finisher and
+// deducts it from the opponent); two consecutive passes strand both
+// racks. Depth and width are budgeted; frontier nodes fall back to the
+// pessimistic both-stuck value.
+function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
+  if (passes >= 2) return rackValueOf(oppRack) - rackValueOf(myRack);
+  const plyCap = myRack.length + oppRack.length <= 8 ? 8 : 4;
+  if (ply >= plyCap || budget.used >= ENDGAME.MOVEGEN_BUDGET) {
+    return rackValueOf(oppRack) - rackValueOf(myRack);
+  }
+
+  const moves = allMovesSorted(myRack, budget).slice(0, ENDGAME.NODE_MOVES);
+  let best = -Infinity;
+  for (const m of moves) {
+    const newRack = rackWithout(myRack, m.placements);
+    let val;
+    if (newRack.length === 0) {
+      val = m.score + 2 * rackValueOf(oppRack); // going out ends the game
+    } else {
+      applyToBoard(m.placements);
+      val = m.score - endgameSearch(oppRack, newRack, 0, ply + 1, -beta, -Math.max(alpha, best), budget);
+      removeFromBoard(m.placements);
+    }
+    if (val > best) best = val;
+    if (best >= beta) return best;
+  }
+
+  // Passing is always legal (and occasionally best, e.g. to avoid
+  // opening the only out-spot for the opponent).
+  const passVal = -endgameSearch(oppRack, myRack, passes + 1, ply + 1, -beta, -Math.max(alpha, best), budget);
+  return Math.max(best, passVal);
+}
+
+// Pick the endgame move by search rather than greedy score. Returning
+// null means passing is at least as good as every candidate move.
+async function findBestEndgameMove(rack) {
+  const oppRack = deriveOpponentRack(rack);
+  const budget = { used: 0 };
+  const moves = allMovesSorted(rack, budget).slice(0, ENDGAME.ROOT_MOVES);
+  if (moves.length === 0) return null;
+
+  let bestMove = null;
+  let bestVal = -Infinity;
+  for (const m of moves) {
+    await yieldToUI();
+    const newRack = rackWithout(rack, m.placements);
+    let val;
+    if (newRack.length === 0) {
+      val = m.score + 2 * rackValueOf(oppRack);
+    } else {
+      applyToBoard(m.placements);
+      val = m.score - endgameSearch(oppRack, newRack, 0, 1, -Infinity, Infinity, budget);
+      removeFromBoard(m.placements);
+    }
+    if (val > bestVal) { bestVal = val; bestMove = m; }
+  }
+
+  const passVal = -endgameSearch(oppRack, rack, 1, 1, -Infinity, Infinity, budget);
+  if (passVal > bestVal) return null;
+  return bestMove;
+}
+
+// ============================================================
 // COMPUTER MOVE ENGINE
 // ============================================================
 
 // Find the best legal move for the given rack: highest score plus the
-// value of the rack it leaves behind.
+// value of the rack it leaves behind. With an empty bag, switch to the
+// adversarial endgame search instead.
 async function findBestMove(rack) {
   ensureTrie();
+  if (state.bag.length === 0) return findBestEndgameMove(rack);
   // The kept rack only has a future while there are tiles to draw into —
   // as the bag runs out, selection fades back to raw score.
   const leaveScale = Math.min(1, state.bag.length / 7);

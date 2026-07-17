@@ -107,5 +107,14 @@ stores the seed it used in the data file's meta line — pass `--seed`
 only to reproduce a past run.
 
 The leave bonus fades out as the bag empties (kept tiles have no future
-with nothing left to draw), so endgame selection is pure greedy. If
-`leaves.js` is missing the engine falls back to greedy entirely.
+with nothing left to draw). If `leaves.js` is missing the engine falls
+back to greedy entirely.
+
+## Endgame Search
+
+Once the bag is empty the game is perfect-information — the opponent's
+rack is exactly the unseen tiles — so instead of greedy scoring the
+engine runs a budgeted alpha-beta search over the remaining playout,
+maximizing final margin under the real end rules (going out banks the
+opponent's rack value twice; two consecutive passes strand both racks).
+Width and depth are capped so a decision stays well under a second.
