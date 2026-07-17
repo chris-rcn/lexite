@@ -1773,7 +1773,6 @@ const SIM = {
   PRUNE_EVERY: 2,   // prune check cadence (in worlds) after the minimum
   TERMINAL_BAG: 8,  // with fewer real bag tiles than this, worlds play
                     // out to the end of the game instead of 2 plies
-  EXCHANGE_SAMPLES: 64, // pool draws sampled when ranking exchange keeps
 };
 
 // Play a sampled world to the end of the game after the candidate move:
@@ -1873,52 +1872,25 @@ function tileCounts(tiles) {
   return counts;
 }
 
-// The best tiles to keep when exchanging. Every proper subset of the
-// rack (at least one tile must go back) is scored by the EXPECTED leave
-// value of (keep + redraw to a full rack), estimated by Monte Carlo over
-// the actual unseen pool — so a vowel-flooded or blank-depleted pool
-// changes which keep wins, which a static ranking of the kept tiles
-// alone cannot see. One shared draw order per sample gives every subset
-// common random numbers, so the comparison error largely cancels.
-// Returns { keep, tiles } or null when no leave model is loaded.
-function bestExchangeKeep(rack, pool, rng) {
+// The best tiles to keep when exchanging: the proper subset of the rack
+// (at least one tile goes back) with the highest static leave value.
+// A pool-aware variant (Monte Carlo over the unseen pool) was tried and
+// removed — it never beat this static ranking and pool-awareness proved
+// redundant with simulation. Returns { keep, tiles } or null when no
+// leave model is loaded.
+function bestExchangeKeep(rack) {
   if (!leaveTables) return null;
   const n = rack.length;
-  if (n === 0 || pool.length === 0) return null;
+  if (n === 0) return null;
   const rackCodes = rack.map(t => t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65);
-  const poolCodes = pool.map(t => t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65);
-  const maskCount = (1 << n) - 1; // masks 0..2^n-2: keep-all excluded
-
-  // Shared draw orders, sampled once and reused by every subset
-  const maxDraw = Math.min(n, poolCodes.length);
-  const perms = [];
-  const perm = poolCodes.slice();
-  for (let s = 0; s < SIM.EXCHANGE_SAMPLES; s++) {
-    for (let i = perm.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      const t = perm[i]; perm[i] = perm[j]; perm[j] = t;
-    }
-    perms.push(perm.slice(0, maxDraw));
-  }
-
   const counts = new Int32Array(27);
   let bestMask = 0;
   let bestVal = -Infinity;
-  for (let mask = 0; mask < maskCount; mask++) {
+  for (let mask = 0; mask < (1 << n) - 1; mask++) { // masks exclude keep-all
     counts.fill(0);
-    let keepSize = 0;
-    for (let i = 0; i < n; i++) {
-      if (mask & (1 << i)) { counts[rackCodes[i]]++; keepSize++; }
-    }
-    let total = 0;
-    for (let s = 0; s < SIM.EXCHANGE_SAMPLES; s++) {
-      const draw = perms[s];
-      const drawCount = Math.min(n - keepSize, draw.length);
-      for (let d = 0; d < drawCount; d++) counts[draw[d]]++;
-      total += leaveValueFromCounts(counts);
-      for (let d = 0; d < drawCount; d++) counts[draw[d]]--;
-    }
-    if (total > bestVal) { bestVal = total; bestMask = mask; }
+    for (let i = 0; i < n; i++) if (mask & (1 << i)) counts[rackCodes[i]]++;
+    const v = leaveValueFromCounts(counts);
+    if (v > bestVal) { bestVal = v; bestMask = mask; }
   }
   const keep = [], tiles = [];
   for (let i = 0; i < n; i++) {
@@ -1941,11 +1913,7 @@ function bestExchangeKeep(rack, pool, rng) {
 // when that is confidently better than the best move.
 async function findBestSimMove(rack) {
   const cands = await collectTopCandidates(rack, SIM.CANDIDATES);
-  // The keep ranking draws from its own hash-derived stream so the world
-  // sampling below is unaffected by the ranker's existence or sample count.
-  const exchange = state.bag.length >= 7
-    ? bestExchangeKeep(rack, deriveOpponentRack(rack), seededRng(positionHash(rack) ^ 0x517cc1b7))
-    : null;
+  const exchange = state.bag.length >= 7 ? bestExchangeKeep(rack) : null;
   if (cands.length === 0) {
     // No legal move: exchange beats passing whenever it is allowed.
     return exchange ? { exchange: true, tiles: exchange.tiles } : null;
