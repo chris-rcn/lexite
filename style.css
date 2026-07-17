@@ -357,6 +357,7 @@ main {
 /* Exchange mode */
 #exchange-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-top: 8px;
@@ -398,12 +399,22 @@ main {
 #action-buttons {
   display: flex;
   flex-direction: row;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
 }
 
 #action-buttons button {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/* Play Word gets its own full-width row; the utility buttons share the
+   row above and wrap when the sidebar is narrow. */
+#action-buttons #btn-play {
+  flex-basis: 100%;
 }
 
 .btn-primary {
@@ -751,7 +762,8 @@ main {
 }
 
 @media (max-width: 400px) {
-  :root { --board-size: 98vw; }
+  /* Full width minus main's padding, so the page never scrolls sideways */
+  :root { --board-size: calc(100vw - 16px); }
   h1 { font-size: 1.2rem; }
 
   .rack-tile {
