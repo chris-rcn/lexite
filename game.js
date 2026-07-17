@@ -1320,7 +1320,7 @@ function deriveOpponentRack(ownRack) {
 const ENDGAME = {
   ROOT_MOVES: 12,      // candidate moves considered at the root
   NODE_MOVES: 8,       // candidate moves per inner search node
-  MOVEGEN_BUDGET: 120, // full-board move generations per decision
+  MOVEGEN_BUDGET: 300, // full-board move generations per decision
 };
 
 function rackValueOf(tiles) {
@@ -1365,18 +1365,63 @@ function rackWithout(rack, placements) {
   return out;
 }
 
+// Frontier evaluation: play both sides greedily (highest score, the old
+// endgame behavior) to the end and return the resulting margin for the
+// side holding myRack. This anchors the search to greedy play — it only
+// deviates where the searched tree finds something provably better —
+// unlike a static both-stuck estimate, which undervalues every line in
+// which scoring continues. Mutates the board during the playout and
+// restores it before returning.
+function greedyRolloutMargin(myRack, oppRack, passes, budget) {
+  const racks = [myRack.slice(), oppRack.slice()];
+  const applied = [];
+  let side = 0, margin = 0, passCount = passes;
+
+  for (;;) {
+    const moves = allMovesSorted(racks[side], budget);
+    const m = moves.length > 0 && moves[0].score > 0 ? moves[0] : null;
+    if (!m) {
+      passCount++;
+      if (passCount >= 2) {
+        margin += rackValueOf(racks[1]) - rackValueOf(racks[0]);
+        break;
+      }
+    } else {
+      passCount = 0;
+      applyToBoard(m.placements);
+      applied.push(m.placements);
+      racks[side] = rackWithout(racks[side], m.placements);
+      margin += side === 0 ? m.score : -m.score;
+      if (racks[side].length === 0) {
+        const bonus = 2 * rackValueOf(racks[1 - side]);
+        margin += side === 0 ? bonus : -bonus;
+        break;
+      }
+    }
+    side = 1 - side;
+  }
+
+  for (let i = applied.length - 1; i >= 0; i--) removeFromBoard(applied[i]);
+  return margin;
+}
+
 // Negamax with alpha-beta over the remaining playout. Returns the best
 // achievable margin (side-to-move future points minus opponent future
 // points) using the game's real terminal rules: going out banks the
 // opponent's rack value twice (endGame credits it to the finisher and
 // deducts it from the opponent); two consecutive passes strand both
-// racks. Depth and width are budgeted; frontier nodes fall back to the
-// pessimistic both-stuck value.
+// racks. Depth and width are budgeted; frontier nodes are valued by
+// greedy rollout (budget exhaustion falls back to the both-stuck value).
 function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   if (passes >= 2) return rackValueOf(oppRack) - rackValueOf(myRack);
-  const plyCap = myRack.length + oppRack.length <= 8 ? 8 : 4;
-  if (ply >= plyCap || budget.used >= ENDGAME.MOVEGEN_BUDGET) {
+  if (budget.used >= ENDGAME.MOVEGEN_BUDGET) {
     return rackValueOf(oppRack) - rackValueOf(myRack);
+  }
+  const plyCap = myRack.length + oppRack.length <= 8 ? 8 : 4;
+  if (ply >= plyCap) {
+    // Rollouts complete even if they overshoot the budget slightly — a
+    // partial rollout would be meaningless — but their true cost counts.
+    return greedyRolloutMargin(myRack, oppRack, passes, budget);
   }
 
   const moves = allMovesSorted(myRack, budget).slice(0, ENDGAME.NODE_MOVES);
