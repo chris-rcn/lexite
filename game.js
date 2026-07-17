@@ -1626,8 +1626,9 @@ async function collectTopCandidates(rack, k) {
 // ============================================================
 
 const SIM = {
-  CANDIDATES: 2, // static candidates evaluated by simulation (test config)
-  SAMPLES: 12,   // sampled worlds, shared across candidates
+  CANDIDATES: 2,   // static candidates evaluated by simulation (test config)
+  SAMPLES: 12,     // sampled worlds, shared across candidates
+  CONFIDENCE: 1.5, // paired z threshold to overrule the static choice
 };
 
 let inSimulation = false; // opponent replies inside a sim use static play
@@ -1697,14 +1698,14 @@ async function findBestSimMove(rack) {
   }
 
   inSimulation = true;
-  let bestIdx = 0;
-  let bestMean = -Infinity;
+  const vals = []; // vals[candidate][world]
   try {
     for (let ci = 0; ci < cands.length; ci++) {
       const m = cands[ci].m;
       const myKept = rackWithout(rack, m.placements);
       applyToBoard(m.placements);
-      let total = 0;
+      const cv = [];
+      vals.push(cv);
       for (const world of worlds) {
         const oppRack = world.slice(0, oppSize);
         let cursor = oppSize;
@@ -1727,15 +1728,35 @@ async function findBestSimMove(rack) {
           horizon = scaleH *
             (leaveValueFromCounts(tileCounts(myNew)) - leaveValueFromCounts(tileCounts(oppNew)));
         }
-        total += m.score - rScore + horizon;
+        cv.push(m.score - rScore + horizon);
       }
       removeFromBoard(m.placements);
-      const mean = total / worlds.length;
-      if (mean > bestMean) { bestMean = mean; bestIdx = ci; }
     }
   } finally {
     inSimulation = false;
     state.bag = realBag;
+  }
+
+  // The static choice (candidate 0) stays unless a challenger beats it
+  // with confidence: the candidates share worlds, so their per-world
+  // differences form a paired sample, and the challenger must win by
+  // more than CONFIDENCE standard errors of that paired difference.
+  // Without the gate, overrules happen at the sampling-noise floor and
+  // are wrong about half the time.
+  let bestIdx = 0;
+  const M = worlds.length;
+  for (let ci = 1; ci < cands.length; ci++) {
+    let mean = 0;
+    for (let w = 0; w < M; w++) mean += vals[ci][w] - vals[bestIdx][w];
+    mean /= M;
+    if (mean <= 0) continue;
+    let varSum = 0;
+    for (let w = 0; w < M; w++) {
+      const d = vals[ci][w] - vals[bestIdx][w] - mean;
+      varSum += d * d;
+    }
+    const se = M > 1 ? Math.sqrt(varSum / (M - 1) / M) : 0;
+    if (se === 0 || mean > SIM.CONFIDENCE * se) bestIdx = ci;
   }
   return cands[bestIdx].m;
 }
