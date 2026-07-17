@@ -563,6 +563,67 @@ main {
 #blank-cancel:hover { background: #ccc; }
 
 /* ========================
+   PASS CONFIRMATION DIALOG
+   ======================== */
+
+#pass-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+#pass-dialog {
+  background: #fff;
+  border-radius: 10px;
+  padding: 22px 26px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  max-width: 300px;
+  width: 90%;
+  text-align: center;
+}
+
+#pass-title {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: #2c1a00;
+  margin-bottom: 6px;
+}
+
+#pass-text {
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 16px;
+}
+
+#pass-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+#pass-confirm {
+  flex: 1;
+  background: #2a7a3a;
+  color: #fff;
+  font-weight: 700;
+  padding: 9px;
+}
+
+#pass-confirm:hover { background: #228b32; }
+
+#pass-cancel {
+  flex: 1;
+  background: #e0e0e0;
+  color: #444;
+  padding: 9px;
+}
+
+#pass-cancel:hover { background: #ccc; }
+
+/* ========================
    END GAME DIALOG
    ======================== */
 

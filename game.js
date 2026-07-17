@@ -102,6 +102,16 @@ async function init() {
     document.getElementById('end-overlay').classList.add('hidden');
     newGame();
   });
+  // Pass confirmation dialog (replaces the native confirm())
+  const hidePassDialog = () => document.getElementById('pass-overlay').classList.add('hidden');
+  document.getElementById('pass-confirm').addEventListener('click', () => {
+    hidePassDialog();
+    passPlayerTurn();
+  });
+  document.getElementById('pass-cancel').addEventListener('click', hidePassDialog);
+  document.getElementById('pass-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('pass-overlay')) hidePassDialog();
+  });
   // The end dialog can be dismissed to inspect the final board — via the
   // View Board button or a click on the backdrop.
   document.getElementById('end-close').addEventListener('click', () => {
@@ -1027,7 +1037,7 @@ function submitPlayerMove() {
   if (!state.playerTurnActive || state.gameOver) return;
 
   if (state.pending.length === 0) {
-    if (confirm('You have no tiles placed. Pass your turn?')) passPlayerTurn();
+    document.getElementById('pass-overlay').classList.remove('hidden');
     return;
   }
 

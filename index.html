@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lexite - Word Game</title>
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 
@@ -78,6 +78,18 @@
         <!-- 26 buttons built by game.js -->
       </div>
       <button id="blank-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Pass confirmation -->
+  <div id="pass-overlay" class="hidden">
+    <div id="pass-dialog">
+      <div id="pass-title">Pass your turn?</div>
+      <div id="pass-text">You have no tiles placed.</div>
+      <div id="pass-buttons">
+        <button id="pass-confirm">Pass</button>
+        <button id="pass-cancel">Cancel</button>
+      </div>
     </div>
   </div>
 
