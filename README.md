@@ -47,7 +47,11 @@ A single-player word tile game played against the computer on a 15×15 board.
 
 ## Word List
 
-The game uses the ENABLE word list, which is in the public domain (~173,000 words).
+The game uses the ENABLE word list, which is in the public domain
+(~173,000 words), plus a small house patch of two-letter words that
+modern Scrabble lists added after ENABLE was compiled: QI, ZA, ZO, KI,
+OI, TE. Without them — QI especially — the Q plays very differently
+than contemporary Scrabble.
 
 ## Comparing Engine Versions
 

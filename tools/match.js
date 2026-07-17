@@ -116,7 +116,9 @@ function loadWords() {
   return text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2);
 }
 
-function loadEngine(file, words) {
+// opts.staticOnly disables the engine's mid-game simulation (used by the
+// trainer, whose target is the static best next-move score).
+function loadEngine(file, words, opts = {}) {
   const code = fs.readFileSync(file, 'utf8');
   // A leaves.js next to the engine file supplies its leave-model weights
   // (an engine version and its trained weights travel as a pair).
@@ -149,6 +151,7 @@ function loadEngine(file, words) {
     for (const w of state.wordSet) {
       if (w.length <= 15) state.wordsByLength[w.length].push(w);
     }
+    if (${opts.staticOnly ? 'true' : 'false'} && typeof SIM !== 'undefined') SIM.CANDIDATES = 1;
     globalThis.__bestMove = (positionJson) => {
       const pos = JSON.parse(positionJson);
       state.board = pos.board;

@@ -127,7 +127,7 @@ function leaveFeatures(leave) {
 
 async function runWorkerJob(spec) {
   const positions = JSON.parse(fs.readFileSync(spec.positionsFile, 'utf8'));
-  const engine = loadEngine(spec.engineFile, loadWords());
+  const engine = loadEngine(spec.engineFile, loadWords(), { staticOnly: true });
   const rng = mulberry32(spec.seed);
 
   const rows = [];
@@ -273,7 +273,7 @@ async function main() {
   // 1. Harvest positions from seeded greedy self-play
   console.log(`Harvesting positions from ${opts.games} self-play games (seed ${opts.seed})...`);
   const words = loadWords();
-  const engine = loadEngine(engineFile, words);
+  const engine = loadEngine(engineFile, words, { staticOnly: true });
   const positions = [];
   for (let g = 0; g < opts.games; g++) {
     const bag = buildSeededBag(mulberry32(opts.seed + g));

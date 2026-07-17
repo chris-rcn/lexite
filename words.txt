@@ -80877,6 +80877,7 @@ khirkahs
 khis
 khoum
 khoums
+ki
 kiang
 kiangs
 kiaugh
@@ -101918,6 +101919,7 @@ ohmmeters
 ohms
 oho
 ohs
+oi
 oidia
 oidium
 oil
@@ -121397,6 +121399,7 @@ qanat
 qanats
 qat
 qats
+qi
 qindar
 qindarka
 qindars
@@ -152512,6 +152515,7 @@ tazzas
 tazze
 tchotchke
 tchotchkes
+te
 tea
 teaberries
 teaberry
@@ -172289,6 +172293,7 @@ yurt
 yurta
 yurts
 ywis
+za
 zabaglione
 zabagliones
 zabaione
@@ -172600,6 +172605,7 @@ zloties
 zloty
 zlotych
 zlotys
+zo
 zoa
 zoantharian
 zoantharians
