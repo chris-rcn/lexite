@@ -80,9 +80,10 @@ a pair, so put each version being compared in its own directory.
 
 The engine picks the move maximizing `score + value(tiles kept)` rather
 than raw score, so it stops dumping blanks and S's for marginal points
-or keeping unplayable racks. The weights live in `leaves.js` (per-letter
-values, duplicate penalties, leave size, vowel/consonant imbalance,
-Q-without-U) and are trained by regression on seeded self-play data:
+or keeping unplayable racks. The weights live in `leaves.js`: a value
+per letter plus a value per unordered letter pair (same-letter pairs
+encode duplicate penalties, and synergies like QU emerge as ordinary
+pair weights). They are trained by regression on seeded self-play data:
 
 ```bash
 node tools/train-leaves.js            # records new samples, refits leaves.js
