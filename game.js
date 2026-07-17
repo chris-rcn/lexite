@@ -1543,13 +1543,10 @@ async function findBestEndgameMove(rack) {
 // COMPUTER MOVE ENGINE
 // ============================================================
 
-// Find the best legal move for the given rack: highest score plus the
-// value of the rack it leaves behind. With an empty bag, switch to the
-// adversarial endgame search instead.
-async function findBestMove(rack) {
-  ensureTrie();
-  ensureLeaveTables();
-  if (state.bag.length === 0) return findBestEndgameMove(rack);
+// Scan every legal move, reporting each with its static value (score plus
+// damped leave value of the kept tiles) to the sink, in the canonical
+// deterministic order.
+async function scanStaticMoves(rack, onMove) {
   // The kept rack only has a future while there are tiles to draw into —
   // as the bag runs out, selection fades back to raw score.
   const leaveScale = Math.min(1, state.bag.length / 7);
@@ -1562,8 +1559,6 @@ async function findBestMove(rack) {
   // leave, so leave values are memoized per turn by the multiset of
   // played tiles (canonical sorted-code key).
   const leaveCache = new Map();
-  let bestVal = -Infinity;
-  let bestMove = null;
   let lastYield = performance.now();
 
   for (let i = 0; i < 15; i++) {
@@ -1601,15 +1596,159 @@ async function findBestMove(rack) {
           }
           val += leaveScale * lv;
         }
-        if (val > bestVal) {
-          bestVal = val;
-          bestMove = m;
-        }
+        onMove(m, val);
       }
     }
   }
+}
 
+// Best move by static evaluation: first strict maximum in scan order.
+async function findBestStaticMove(rack) {
+  let bestVal = -Infinity;
+  let bestMove = null;
+  await scanStaticMoves(rack, (m, val) => {
+    if (val > bestVal) { bestVal = val; bestMove = m; }
+  });
   return bestMove;
+}
+
+// Top k moves by static value; ties keep scan order (stable sort), so
+// element 0 is exactly findBestStaticMove's choice.
+async function collectTopCandidates(rack, k) {
+  const all = [];
+  await scanStaticMoves(rack, (m, val) => { all.push({ m, val }); });
+  all.sort((a, b) => b.val - a.val);
+  return all.slice(0, k);
+}
+
+// ============================================================
+// SIMULATION (mid-game lookahead)
+// ============================================================
+
+const SIM = {
+  CANDIDATES: 2, // static candidates evaluated by simulation (test config)
+  SAMPLES: 12,   // sampled worlds, shared across candidates
+};
+
+let inSimulation = false; // opponent replies inside a sim use static play
+
+function seededRng(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// FNV-1a over board, own rack, and bag size: the same position always
+// draws the same sample worlds, keeping games fully deterministic.
+function positionHash(rack) {
+  let h = 0x811c9dc5;
+  const mix = v => { h ^= v; h = Math.imul(h, 0x01000193); };
+  for (let r = 0; r < 15; r++) {
+    for (let c = 0; c < 15; c++) {
+      const cell = state.board[r][c];
+      mix(cell ? cell.letter.charCodeAt(0) + (cell.isBlank ? 64 : 0) : 255);
+    }
+  }
+  const codes = rack
+    .map(t => t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65)
+    .sort((a, b) => a - b);
+  for (const c of codes) mix(c + 300);
+  mix(state.bag.length + 1000);
+  return h >>> 0;
+}
+
+function tileCounts(tiles) {
+  const counts = new Int32Array(27);
+  for (const t of tiles) {
+    counts[t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65]++;
+  }
+  return counts;
+}
+
+// Choose among the top static candidates by 2-ply simulation: sample the
+// unseen tiles into opponent rack + draw order (the same worlds for every
+// candidate — common random numbers), play the candidate, let the sampled
+// opponent answer with its static best, and value the outcome as score
+// differential plus the damped leave differential at the horizon. The
+// candidate with the best mean wins; ties keep static order.
+async function findBestSimMove(rack) {
+  const cands = await collectTopCandidates(rack, SIM.CANDIDATES);
+  if (cands.length === 0) return null;
+  if (cands.length === 1) return cands[0].m;
+
+  const realBag = state.bag;
+  const pool = deriveOpponentRack(rack); // unseen tiles: bag + opponent rack
+  const oppSize = pool.length - realBag.length;
+  if (oppSize <= 0) return cands[0].m;
+
+  const rng = seededRng(positionHash(rack));
+  const worlds = [];
+  for (let w = 0; w < SIM.SAMPLES; w++) {
+    const p = pool.slice();
+    for (let i = p.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [p[i], p[j]] = [p[j], p[i]];
+    }
+    worlds.push(p); // first oppSize tiles: opponent rack; rest: draw order
+  }
+
+  inSimulation = true;
+  let bestIdx = 0;
+  let bestMean = -Infinity;
+  try {
+    for (let ci = 0; ci < cands.length; ci++) {
+      const m = cands[ci].m;
+      const myKept = rackWithout(rack, m.placements);
+      applyToBoard(m.placements);
+      let total = 0;
+      for (const world of worlds) {
+        const oppRack = world.slice(0, oppSize);
+        let cursor = oppSize;
+        const myDraw = Math.min(7 - myKept.length, world.length - cursor);
+        const myNew = myKept.concat(world.slice(cursor, cursor + myDraw));
+        cursor += myDraw;
+
+        // Opponent answers on the post-move board; only the simulated
+        // bag's length matters (leave damping / endgame switch).
+        state.bag = world.slice(cursor);
+        const reply = await findBestMove(oppRack);
+        const rScore = reply ? reply.score : 0;
+        const oppKept = reply ? rackWithout(oppRack, reply.placements) : oppRack;
+        const oppDraw = Math.min(7 - oppKept.length, state.bag.length);
+        const oppNew = oppKept.concat(world.slice(cursor, cursor + oppDraw));
+
+        let horizon = 0;
+        const scaleH = Math.min(1, (state.bag.length - oppDraw) / 7);
+        if (scaleH > 0 && leaveTables) {
+          horizon = scaleH *
+            (leaveValueFromCounts(tileCounts(myNew)) - leaveValueFromCounts(tileCounts(oppNew)));
+        }
+        total += m.score - rScore + horizon;
+      }
+      removeFromBoard(m.placements);
+      const mean = total / worlds.length;
+      if (mean > bestMean) { bestMean = mean; bestIdx = ci; }
+    }
+  } finally {
+    inSimulation = false;
+    state.bag = realBag;
+  }
+  return cands[bestIdx].m;
+}
+
+// Find the best legal move for the given rack. With an empty bag this is
+// the adversarial endgame search; otherwise simulation picks among the
+// top static candidates (static play inside simulated replies).
+async function findBestMove(rack) {
+  ensureTrie();
+  ensureLeaveTables();
+  if (state.bag.length === 0) return findBestEndgameMove(rack);
+  if (SIM.CANDIDATES > 1 && !inSimulation) return findBestSimMove(rack);
+  return findBestStaticMove(rack);
 }
 
 // Generate all legal moves in one line via the trie (Appel–Jacobson):
