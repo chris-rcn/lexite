@@ -1558,6 +1558,10 @@ async function findBestMove(rack) {
   for (const t of rack) {
     rackCounts[t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65]++;
   }
+  // Many candidates play the same tiles in different places and share a
+  // leave, so leave values are memoized per turn by the multiset of
+  // played tiles (canonical sorted-code key).
+  const leaveCache = new Map();
   let bestVal = -Infinity;
   let bestMove = null;
   let lastYield = performance.now();
@@ -1577,13 +1581,25 @@ async function findBestMove(rack) {
         if (m.score <= 0) continue;
         let val = m.score;
         if (useLeave) {
+          const codes = [];
           for (const p of m.placements) {
-            rackCounts[p.isBlank ? 26 : p.letter.charCodeAt(0) - 65]--;
+            codes.push(p.isBlank ? 26 : p.letter.charCodeAt(0) - 65);
+            let j = codes.length - 1;
+            while (j > 0 && codes[j - 1] > codes[j]) {
+              const t = codes[j]; codes[j] = codes[j - 1]; codes[j - 1] = t;
+              j--;
+            }
           }
-          val += leaveScale * leaveValueFromCounts(rackCounts);
-          for (const p of m.placements) {
-            rackCounts[p.isBlank ? 26 : p.letter.charCodeAt(0) - 65]++;
+          let key = 0;
+          for (const c of codes) key = key * 27 + c + 1;
+          let lv = leaveCache.get(key);
+          if (lv === undefined) {
+            for (const c of codes) rackCounts[c]--;
+            lv = leaveValueFromCounts(rackCounts);
+            for (const c of codes) rackCounts[c]++;
+            leaveCache.set(key, lv);
           }
+          val += leaveScale * lv;
         }
         if (val > bestVal) {
           bestVal = val;
