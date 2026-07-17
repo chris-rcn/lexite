@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lexite - Word Game</title>
-  <link rel="stylesheet" href="style.css?v=17">
+  <link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
 
@@ -49,11 +49,15 @@
       </div>
 
       <div id="action-buttons">
-        <button id="btn-lifeline">Play Lifeline</button>
-        <button id="btn-recall">Recall Tiles</button>
-        <button id="btn-shuffle">Shuffle Rack</button>
-        <button id="btn-exchange">Swap Tiles</button>
-        <button id="btn-play" class="btn-primary">Play Word</button>
+        <div class="action-row">
+          <button id="btn-lifeline">Play Lifeline</button>
+          <button id="btn-recall">Recall Tiles</button>
+          <button id="btn-shuffle">Shuffle Rack</button>
+        </div>
+        <div class="action-row">
+          <button id="btn-exchange">Swap Tiles</button>
+          <button id="btn-play" class="btn-primary">Play Word</button>
+        </div>
       </div>
       <div id="exchange-bar" class="hidden">
         <span id="exchange-hint">Select tiles to swap</span>

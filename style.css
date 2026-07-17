@@ -398,23 +398,26 @@ main {
 
 #action-buttons {
   display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
   margin-top: 8px;
 }
 
-#action-buttons button {
-  flex: 1 1 auto;
+.action-row {
+  display: flex;
+  gap: 8px;
+}
+
+.action-row button {
+  flex: 1;
   min-width: 0;
   padding-left: 8px;
   padding-right: 8px;
 }
 
-/* Play Word gets its own full-width row; the utility buttons share the
-   row above and wrap when the sidebar is narrow. */
-#action-buttons #btn-play {
-  flex-basis: 100%;
+/* Play Word shares its row with Swap Tiles, slightly emphasized */
+.action-row #btn-play {
+  flex: 1.5;
 }
 
 .btn-primary {
