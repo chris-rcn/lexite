@@ -709,6 +709,13 @@ function validatePlayerMove() {
   // Single tile: determine direction from adjacency
   let dir;
   if (pending.length === 1) {
+    // On the first move there is nothing to connect to — give the
+    // first-move errors instead of the nonsensical "must connect" one.
+    if (state.isFirstMove) {
+      if (!(pending[0].row === 7 && pending[0].col === 7))
+        return {valid:false, error:'The first word must cover the center square (★).'};
+      return {valid:false, error:'The first word must be at least 2 letters.'};
+    }
     const {row,col} = pending[0];
     const hWord = getWordAt(row, col, true, pending);
     const vWord = getWordAt(row, col, false, pending);
