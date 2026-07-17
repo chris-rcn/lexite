@@ -1636,11 +1636,12 @@ async function collectTopCandidates(rack, k) {
 // ============================================================
 
 const SIM = {
-  CANDIDATES: 5,   // static candidates evaluated by simulation
-  SAMPLES: 20,     // sampled worlds, shared across candidates
-  CONFIDENCE: 1.5, // paired z threshold to overrule the static choice
-  MIN_WORLDS: 6,   // worlds evaluated before pruning may trigger
-  PRUNE_EVERY: 2,  // prune check cadence (in worlds) after the minimum
+  CANDIDATES: 12,   // static candidates admitted to the race (entry width)
+  MIN_WORLDS: 4,    // shared worlds evaluated before elimination may trigger
+  MAX_WORLDS: 24,   // world cap for the finalists
+  MAX_REPLIES: 120, // total reply-search budget per decision
+  ELIM: 2.0,        // paired z bound to eliminate arms / decide early
+  CONFIDENCE: 1.5,  // final paired z to overrule the static choice
 };
 
 let inSimulation = false; // opponent replies inside a sim use static play
@@ -1682,12 +1683,18 @@ function tileCounts(tiles) {
   return counts;
 }
 
-// Choose among the top static candidates by 2-ply simulation: sample the
-// unseen tiles into opponent rack + draw order (the same worlds for every
-// candidate — common random numbers), play the candidate, let the sampled
-// opponent answer with its static best, and value the outcome as score
-// differential plus the damped leave differential at the horizon. The
-// candidate with the best mean wins; ties keep static order.
+// Choose the move by paired racing over the top static candidates
+// (best-arm identification, not regret-style UCB): admit a wide entry
+// field, evaluate all surviving arms on the same sampled worlds (common
+// random numbers, so comparisons are paired), eliminate arms whose
+// paired upper bound falls below the current leader, and stop as soon
+// as the decision is determined or the reply budget is spent. Each
+// world evaluation plays the candidate, lets the sampled opponent
+// answer with its static best, and values the outcome as score
+// differential plus the damped leave differential at the horizon.
+// The static choice (arm 0) is never eliminated: it is the pairing
+// base for the final overrule gate, which keeps the incumbent unless a
+// survivor beats it by CONFIDENCE paired standard errors.
 async function findBestSimMove(rack) {
   const cands = await collectTopCandidates(rack, SIM.CANDIDATES);
   if (cands.length === 0) return null;
@@ -1700,7 +1707,7 @@ async function findBestSimMove(rack) {
 
   const rng = seededRng(positionHash(rack));
   const worlds = [];
-  for (let w = 0; w < SIM.SAMPLES; w++) {
+  for (let w = 0; w < SIM.MAX_WORLDS; w++) {
     const p = pool.slice();
     for (let i = p.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -1725,14 +1732,15 @@ async function findBestSimMove(rack) {
 
   inSimulation = true;
   const K = cands.length;
-  const M = worlds.length;
-  const vals = Array.from({ length: K }, () => []); // vals[candidate][world]
+  const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
   const kept = cands.map(c => rackWithout(rack, c.m.placements));
+  let aliveCount = K;
+  let replies = 0;
+  let n = 0; // worlds fully evaluated
   try {
-    // World-major so surviving candidates advance together and pruning
-    // can retire hopeless challengers early.
-    for (let w = 0; w < M; w++) {
+    for (let w = 0; w < SIM.MAX_WORLDS; w++) {
+      if (replies + aliveCount > SIM.MAX_REPLIES) break;
       const world = worlds[w];
       for (let ci = 0; ci < K; ci++) {
         if (!alive[ci]) continue;
@@ -1762,18 +1770,42 @@ async function findBestSimMove(rack) {
         }
         vals[ci].push(m.score - rScore + horizon);
         removeFromBoard(m.placements);
+        replies++;
+      }
+      n = w + 1;
+      if (n < SIM.MIN_WORLDS) continue;
+
+      // Current leader: alive arm with the best running mean.
+      let leader = -1;
+      let leaderMean = -Infinity;
+      for (let ci = 0; ci < K; ci++) {
+        if (!alive[ci]) continue;
+        let mean = 0;
+        for (let ww = 0; ww < n; ww++) mean += vals[ci][ww];
+        mean /= n;
+        if (mean > leaderMean) { leaderMean = mean; leader = ci; }
       }
 
-      // Prune challengers that are confidently worse than the incumbent —
-      // they can never win the final overrule gate, so stop paying for
-      // their reply searches. The incumbent (candidate 0) is never pruned.
-      const n = w + 1;
-      if (n >= SIM.MIN_WORLDS && n < M && (n - SIM.MIN_WORLDS) % SIM.PRUNE_EVERY === 0) {
-        for (let ci = 1; ci < K; ci++) {
-          if (!alive[ci]) continue;
-          const [mean, se] = pairedStats(vals, ci, 0, n);
-          if (mean < 0 && (se === 0 || mean < -SIM.CONFIDENCE * se)) alive[ci] = false;
+      // Race: eliminate challengers confidently below the leader. Arm 0
+      // is never eliminated — it must complete every world so the final
+      // gate has a fully paired sample.
+      for (let ci = 1; ci < K; ci++) {
+        if (!alive[ci] || ci === leader) continue;
+        const [mean, se] = pairedStats(vals, ci, leader, n);
+        if (mean + SIM.ELIM * se < 0 || (se === 0 && mean < 0)) {
+          alive[ci] = false;
+          aliveCount--;
         }
+      }
+
+      // Early stop when the decision is determined: no challengers left
+      // (keep the incumbent), or only the leader remains in contention
+      // and it confidently dominates the incumbent too (overrule).
+      const aliveChallengers = aliveCount - 1; // arm 0 is always alive
+      if (aliveChallengers === 0) break;
+      if (leader !== 0 && aliveChallengers === 1) {
+        const [mean0, se0] = pairedStats(vals, 0, leader, n);
+        if (mean0 + SIM.ELIM * se0 < 0) break;
       }
     }
   } finally {
@@ -1781,16 +1813,13 @@ async function findBestSimMove(rack) {
     state.bag = realBag;
   }
 
-  // The static choice (candidate 0) stays unless a surviving challenger
-  // beats it with confidence: the candidates share worlds, so their
-  // per-world differences form a paired sample, and the challenger must
-  // win by more than CONFIDENCE standard errors of that difference.
-  // Without the gate, overrules happen at the sampling-noise floor and
-  // are wrong about half the time.
+  // Final gate over the survivors: the static choice stands unless a
+  // challenger beats the current best by CONFIDENCE standard errors of
+  // the paired per-world differences.
   let bestIdx = 0;
   for (let ci = 1; ci < K; ci++) {
     if (!alive[ci]) continue;
-    const [mean, se] = pairedStats(vals, ci, bestIdx, M);
+    const [mean, se] = pairedStats(vals, ci, bestIdx, n);
     if (mean <= 0) continue;
     if (se === 0 || mean > SIM.CONFIDENCE * se) bestIdx = ci;
   }
