@@ -27,9 +27,10 @@
 // unseen pool — the first 0-6 tiles of the draw are the "leave" — and
 // measure the best next-move score a plain greedy engine achieves with
 // that rack. A ridge regression of score on leave features (per-letter
-// counts, duplicate counts, leave size, vowel/consonant imbalance,
-// Q-without-U) estimates each kept tile's marginal contribution. The
-// pipeline is seeded and deterministic; sampling fans out over workers.
+// counts and all unordered letter-pair counts; same-letter pairs encode
+// duplicates, and synergies like QU emerge as pair weights) estimates
+// each kept tile's marginal contribution. The pipeline is seeded and
+// deterministic; sampling fans out over workers.
 //
 // The evaluation engine is a copy of game.js placed in a directory with
 // no leaves.js, so training always measures the greedy engine, never an
@@ -45,9 +46,22 @@ const { execFile } = require('child_process');
 const { mulberry32, buildSeededBag, loadWords, loadEngine, playGame } = require('./match.js');
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ?'.split('');
-// Features: 27 per-letter counts, 27 per-letter duplicate counts,
-// leave size, |vowels - consonants|, Q-without-U, intercept.
-const DIM = 27 + 27 + 3 + 1;
+// Features: 27 per-letter counts, 378 unordered letter-pair counts
+// (same-letter pairs encode duplicates), and an intercept. Pair keys are
+// the two characters in lexicographic order ('?' sorts first) — the same
+// keys leaveValue() in game.js looks up.
+const LETTER_INDEX = {};
+LETTERS.forEach((ch, i) => { LETTER_INDEX[ch] = i; });
+const PAIR_KEYS = [];
+const PAIR_INDEX = {};
+for (let i = 0; i < LETTERS.length; i++) {
+  for (let j = i; j < LETTERS.length; j++) {
+    const key = [LETTERS[i], LETTERS[j]].sort().join('');
+    PAIR_INDEX[key] = 27 + PAIR_KEYS.length;
+    PAIR_KEYS.push(key);
+  }
+}
+const DIM = 27 + PAIR_KEYS.length + 1; // + intercept
 
 function parseArgs(argv) {
   const opts = {
@@ -86,23 +100,19 @@ function leaveFeatures(leave) {
   const x = new Float64Array(DIM);
   const counts = {};
   for (const ch of leave) counts[ch] = (counts[ch] || 0) + 1;
-  let vowels = 0, consonants = 0, hasQ = false, hasU = false, size = 0;
-  LETTERS.forEach((ch, i) => {
-    const n = counts[ch] || 0;
-    if (n === 0) return;
-    x[i] = n;
-    x[27 + i] = n - 1;
-    size += n;
-    if (ch === 'Q') hasQ = true;
-    if (ch === 'U') hasU = true;
-    if (ch !== '?') {
-      if ('AEIOU'.includes(ch)) vowels += n; else consonants += n;
+  const present = Object.keys(counts);
+  for (const ch of present) {
+    const n = counts[ch];
+    x[LETTER_INDEX[ch]] = n;
+    if (n >= 2) x[PAIR_INDEX[ch + ch]] = n * (n - 1) / 2;
+  }
+  for (let a = 0; a < present.length; a++) {
+    for (let b = a + 1; b < present.length; b++) {
+      const key = [present[a], present[b]].sort().join('');
+      x[PAIR_INDEX[key]] = counts[present[a]] * counts[present[b]];
     }
-  });
-  x[54] = size;
-  x[55] = Math.abs(vowels - consonants);
-  x[56] = hasQ && !hasU ? 1 : 0;
-  x[57] = 1; // intercept (dropped from the emitted weights)
+  }
+  x[DIM - 1] = 1; // intercept (dropped from the emitted weights)
   return x;
 }
 
@@ -171,7 +181,7 @@ function solveRidge(xtx, xty, dim, lambda) {
   return w;
 }
 
-function fitRows(rows) {
+function fitRows(rows, lambda = 1.0) {
   const xtx = new Float64Array(DIM * DIM);
   const xty = new Float64Array(DIM);
   let sumY = 0;
@@ -184,20 +194,16 @@ function fitRows(rows) {
     }
     sumY += row.y;
   }
-  const w = solveRidge(xtx, xty, DIM, 1.0);
+  const w = solveRidge(xtx, xty, DIM, lambda);
   const round = v => Math.round(v * 1000) / 1000;
-  const letter = {}, duplicate = {};
-  LETTERS.forEach((ch, i) => {
-    letter[ch] = round(w[i]);
-    duplicate[ch] = round(w[27 + i]);
+  const letter = {}, pair = {};
+  LETTERS.forEach((ch, i) => { letter[ch] = round(w[i]); });
+  PAIR_KEYS.forEach((key, i) => {
+    const v = round(w[27 + i]);
+    if (v !== 0) pair[key] = v; // omit pairs that round to zero
   });
   return {
-    weights: {
-      letter, duplicate,
-      size: round(w[54]),
-      imbalance: round(w[55]),
-      qNoU: round(w[56]),
-    },
+    weights: { letter, pair },
     n: rows.length,
     meanY: sumY / rows.length,
   };
@@ -208,9 +214,13 @@ function readRows(dataFile) {
   const rows = [];
   for (const line of fs.readFileSync(dataFile, 'utf8').split('\n')) {
     if (!line) continue;
-    const obj = JSON.parse(line);
-    if (obj.meta) continue; // provenance marker, not a sample
-    rows.push(obj);
+    try {
+      const obj = JSON.parse(line);
+      if (obj.meta) continue; // provenance marker, not a sample
+      rows.push(obj);
+    } catch {
+      // torn line from a concurrent recording run's append — skip
+    }
   }
   return rows;
 }
@@ -225,8 +235,8 @@ const LEAVE_WEIGHTS = `;
   const w = fit.weights;
   console.log(`Wrote ${outFile}`);
   console.log(`Spot checks — blank: ${w.letter['?']}, S: ${w.letter.S}, Q: ${w.letter.Q},` +
-    ` E: ${w.letter.E}, V: ${w.letter.V}, dup E: ${w.duplicate.E},` +
-    ` imbalance: ${w.imbalance}, Q-no-U: ${w.qNoU}`);
+    ` QU pair: ${w.pair.QU ?? 0}, EE pair: ${w.pair.EE ?? 0}, ER pair: ${w.pair.ER ?? 0},` +
+    ` II pair: ${w.pair.II ?? 0}, ?S pair: ${w.pair['?S'] ?? 0}`);
 }
 
 // ---------------------------------------------------------------
@@ -313,4 +323,8 @@ async function main() {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+module.exports = { LETTERS, PAIR_KEYS, DIM, leaveFeatures, fitRows, readRows };
+
+if (require.main === module) {
+  main().catch(e => { console.error(e); process.exit(1); });
+}

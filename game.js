@@ -1261,8 +1261,12 @@ function computeCrossMask(r, c, moveIsHoriz) {
 // ============================================================
 
 // Value of the tiles kept after playing `placements` from `rack`, using
-// weights trained by tools/train-leaves.js (loaded from leaves.js). When
-// no weights are loaded the value is 0 and selection is pure greedy.
+// weights trained by tools/train-leaves.js (loaded from leaves.js). The
+// model is linear in per-letter counts plus all unordered letter-pair
+// counts — same-letter pairs encode duplicates, and synergies like QU
+// are ordinary pair weights. Pair keys are the two characters in
+// lexicographic order ('?' sorts first). When no weights are loaded the
+// value is 0 and selection is pure greedy.
 function leaveValue(rack, placements) {
   if (typeof LEAVE_WEIGHTS === 'undefined' || !LEAVE_WEIGHTS) return 0;
   const counts = {};
@@ -1276,21 +1280,16 @@ function leaveValue(rack, placements) {
   }
 
   const W = LEAVE_WEIGHTS;
-  let val = 0, size = 0, vowels = 0, consonants = 0;
-  let hasQ = false, hasU = false;
-  for (const [k, n] of Object.entries(counts)) {
-    if (n <= 0) continue;
-    size += n;
-    val += (W.letter[k] || 0) * n + (W.duplicate[k] || 0) * (n - 1);
-    if (k === 'Q') hasQ = true;
-    if (k === 'U') hasU = true;
-    if (k !== '?') {
-      if ('AEIOU'.includes(k)) vowels += n; else consonants += n;
+  const kept = Object.keys(counts).filter(k => counts[k] > 0).sort();
+  let val = 0;
+  for (let a = 0; a < kept.length; a++) {
+    const k1 = kept[a], n1 = counts[k1];
+    val += (W.letter[k1] || 0) * n1;
+    if (n1 >= 2) val += (W.pair[k1 + k1] || 0) * (n1 * (n1 - 1) / 2);
+    for (let b = a + 1; b < kept.length; b++) {
+      val += (W.pair[k1 + kept[b]] || 0) * n1 * counts[kept[b]];
     }
   }
-  val += W.size * size;
-  val += W.imbalance * Math.abs(vowels - consonants);
-  if (hasQ && !hasU) val += W.qNoU;
   return val;
 }
 
