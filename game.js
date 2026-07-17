@@ -1435,24 +1435,30 @@ function ensureLeaveTables() {
 // Letter codes in the iteration order of the previous implementation
 // (kept letters sorted as characters, where '?' sorts before 'A') — the
 // float additions must happen in the same order to stay bit-identical.
-const LEAVE_CHAR_ORDER = [26].concat(Array.from({ length: 26 }, (_, i) => i));
+const LEAVE_CHAR_ORDER = Int32Array.from([26].concat(Array.from({ length: 26 }, (_, i) => i)));
+
+// Scratch for the present-letter codes: leaveValueFromCounts is on the
+// hot path (thousands of calls per decision), so it must not allocate.
+const LEAVE_PRESENT_SCRATCH = new Int32Array(27);
 
 // Value of the kept tiles given their counts by letter code.
 function leaveValueFromCounts(counts) {
   const t = leaveTables;
   if (!t) return 0;
-  const present = [];
-  for (const code of LEAVE_CHAR_ORDER) {
-    if (counts[code] > 0) present.push(code);
+  const present = LEAVE_PRESENT_SCRATCH;
+  let np = 0;
+  for (let k = 0; k < 27; k++) {
+    const code = LEAVE_CHAR_ORDER[k];
+    if (counts[code] > 0) present[np++] = code;
   }
   let val = 0;
-  for (let a = 0; a < present.length; a++) {
+  for (let a = 0; a < np; a++) {
     const c1 = present[a], n1 = counts[c1];
     val += t.letterW[c1] * n1;
     if (n1 >= 2) val += t.pairW[c1 * 27 + c1] * (n1 * (n1 - 1) / 2);
-    for (let b = a + 1; b < present.length; b++) {
+    for (let b = a + 1; b < np; b++) {
       const c2 = present[b];
-      val += t.pairW[Math.min(c1, c2) * 27 + Math.max(c1, c2)] * n1 * counts[c2];
+      val += t.pairW[(c1 < c2 ? c1 : c2) * 27 + (c1 < c2 ? c2 : c1)] * n1 * counts[c2];
     }
   }
   return val;
@@ -1747,6 +1753,7 @@ const SIM = {
   PRUNE_EVERY: 2,   // prune check cadence (in worlds) after the minimum
   TERMINAL_BAG: 8,  // with fewer real bag tiles than this, worlds play
                     // out to the end of the game instead of 2 plies
+  EXCHANGE_SAMPLES: 64, // pool draws sampled when ranking exchange keeps
 };
 
 // Play a sampled world to the end of the game after the candidate move:
@@ -1846,25 +1853,52 @@ function tileCounts(tiles) {
   return counts;
 }
 
-// The best tiles to keep when exchanging, ranked by leave value across
-// every proper subset of the rack (at least one tile must go back).
+// The best tiles to keep when exchanging. Every proper subset of the
+// rack (at least one tile must go back) is scored by the EXPECTED leave
+// value of (keep + redraw to a full rack), estimated by Monte Carlo over
+// the actual unseen pool — so a vowel-flooded or blank-depleted pool
+// changes which keep wins, which a static ranking of the kept tiles
+// alone cannot see. One shared draw order per sample gives every subset
+// common random numbers, so the comparison error largely cancels.
 // Returns { keep, tiles } or null when no leave model is loaded.
-function bestExchangeKeep(rack) {
+function bestExchangeKeep(rack, pool, rng) {
   if (!leaveTables) return null;
   const n = rack.length;
-  if (n === 0) return null;
-  const counts = new Int32Array(27);
-  let bestVal = -Infinity;
-  let bestMask = -1;
-  for (let mask = 0; mask < (1 << n) - 1; mask++) { // excludes keep-all
-    counts.fill(0);
-    for (let i = 0; i < n; i++) {
-      if (mask & (1 << i)) {
-        counts[rack[i].isBlank ? 26 : rack[i].letter.toUpperCase().charCodeAt(0) - 65]++;
-      }
+  if (n === 0 || pool.length === 0) return null;
+  const rackCodes = rack.map(t => t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65);
+  const poolCodes = pool.map(t => t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65);
+  const maskCount = (1 << n) - 1; // masks 0..2^n-2: keep-all excluded
+
+  // Shared draw orders, sampled once and reused by every subset
+  const maxDraw = Math.min(n, poolCodes.length);
+  const perms = [];
+  const perm = poolCodes.slice();
+  for (let s = 0; s < SIM.EXCHANGE_SAMPLES; s++) {
+    for (let i = perm.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const t = perm[i]; perm[i] = perm[j]; perm[j] = t;
     }
-    const v = leaveValueFromCounts(counts);
-    if (v > bestVal) { bestVal = v; bestMask = mask; }
+    perms.push(perm.slice(0, maxDraw));
+  }
+
+  const counts = new Int32Array(27);
+  let bestMask = 0;
+  let bestVal = -Infinity;
+  for (let mask = 0; mask < maskCount; mask++) {
+    counts.fill(0);
+    let keepSize = 0;
+    for (let i = 0; i < n; i++) {
+      if (mask & (1 << i)) { counts[rackCodes[i]]++; keepSize++; }
+    }
+    let total = 0;
+    for (let s = 0; s < SIM.EXCHANGE_SAMPLES; s++) {
+      const draw = perms[s];
+      const drawCount = Math.min(n - keepSize, draw.length);
+      for (let d = 0; d < drawCount; d++) counts[draw[d]]++;
+      total += leaveValueFromCounts(counts);
+      for (let d = 0; d < drawCount; d++) counts[draw[d]]--;
+    }
+    if (total > bestVal) { bestVal = total; bestMask = mask; }
   }
   const keep = [], tiles = [];
   for (let i = 0; i < n; i++) {
@@ -1887,7 +1921,11 @@ function bestExchangeKeep(rack) {
 // when that is confidently better than the best move.
 async function findBestSimMove(rack) {
   const cands = await collectTopCandidates(rack, SIM.CANDIDATES);
-  const exchange = state.bag.length >= 7 ? bestExchangeKeep(rack) : null;
+  // The keep ranking draws from its own hash-derived stream so the world
+  // sampling below is unaffected by the ranker's existence or sample count.
+  const exchange = state.bag.length >= 7
+    ? bestExchangeKeep(rack, deriveOpponentRack(rack), seededRng(positionHash(rack) ^ 0x517cc1b7))
+    : null;
   if (cands.length === 0) {
     // No legal move: exchange beats passing whenever it is allowed.
     return exchange ? { exchange: true, tiles: exchange.tiles } : null;
