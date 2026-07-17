@@ -6,8 +6,10 @@
 //                              [--jobs J] [--out leaves.js] [--data FILE]
 //                              [--fit-only | --record-only]
 //
-// Defaults: --samples 60000 --games 16 --seed 1 --jobs (cpus, max 4)
+// Defaults: --samples 60000 --games 16 --jobs (cpus, max 4)
 //           --data data/leave-samples.jsonl
+//           --seed random (logged, and stored in the data file's meta
+//           line; pass --seed explicitly only to reproduce a past run)
 //
 // Every sampled evaluation is appended to the data file as one JSON line
 // {"l":"<sorted leave letters>","y":<best next-move score>}, with a
@@ -17,8 +19,7 @@
 //   --fit-only     refit weights from the recorded data (< 1 s); use
 //                  after changing features or the regression, as long as
 //                  features remain a function of the leave alone
-//   --record-only  sample and append more data (use a FRESH --seed, or
-//                  you will re-record identical rows) without refitting
+//   --record-only  sample and append more data without refitting
 // A normal run records new rows and then fits on the ENTIRE data file.
 //
 // Method: harvest board positions from seeded self-play, then for each
@@ -36,6 +37,7 @@
 
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -49,7 +51,10 @@ const DIM = 27 + 27 + 3 + 1;
 
 function parseArgs(argv) {
   const opts = {
-    samples: 60000, games: 16, seed: 1,
+    // seed defaults to a random value so repeated recording runs can never
+    // silently append duplicate rows; pass --seed only to reproduce a run
+    // (the seed used is logged and stored in the data file's meta line).
+    samples: 60000, games: 16, seed: crypto.randomInt(1, 2 ** 31),
     jobs: Math.max(1, Math.min(4, os.cpus().length - 1)),
     out: path.resolve(__dirname, '..', 'leaves.js'),
     data: path.resolve(__dirname, '..', 'data', 'leave-samples.jsonl'),

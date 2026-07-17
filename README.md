@@ -95,14 +95,15 @@ markers), because the engine evaluations are the expensive part of
 training. That makes iteration cheap:
 
 ```bash
-node tools/train-leaves.js --fit-only            # refit from recorded data, < 1 s
-node tools/train-leaves.js --record-only --seed 7  # grow the dataset (use a fresh seed!)
+node tools/train-leaves.js --fit-only       # refit from recorded data, < 1 s
+node tools/train-leaves.js --record-only    # grow the dataset
 ```
 
 Use `--fit-only` after changing leave features or the regression; a
-normal run appends new samples and refits on the whole file. Always give
-`--record-only` runs a seed not previously recorded, or you will append
-duplicate rows.
+normal run appends new samples and refits on the whole file. Each run
+seeds itself randomly (so repeated runs never append duplicate rows) and
+stores the seed it used in the data file's meta line — pass `--seed`
+only to reproduce a past run.
 
 The leave bonus fades out as the bag empties (kept tiles have no future
 with nothing left to draw), so endgame selection is pure greedy. If
