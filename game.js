@@ -745,7 +745,7 @@ function updateExchangeConfirm() {
   const n = state.exchangeSelected.size;
   const btn = document.getElementById('exchange-confirm');
   btn.disabled = n === 0;
-  btn.textContent = `Exchange (${n})`;
+  btn.textContent = `Swap (${n})`;
 }
 
 function confirmExchange() {

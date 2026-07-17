@@ -29,8 +29,8 @@ A single-player word tile game played against the computer on a 15×15 board.
 4. Click **Shuffle Rack** to rearrange your rack tiles.
    Click **Recall Tiles** to take back all tiles you placed this turn.
    Click **Play Lifeline** (once per game) to have the computer play your best move for you.
-   Click **Exchange** (needs 7+ tiles in the bag) to swap tiles: select the
-   ones to give up, then confirm. An exchange scores nothing and uses your turn.
+   Click **Swap Tiles** (needs 7+ tiles in the bag) to exchange tiles: select
+   the ones to give up, then confirm. An exchange scores nothing and uses your turn.
    Click **Play Word** to submit your move.
    To pass, click **Play Word** with no tiles placed and confirm.
    Six consecutive scoreless turns (passes or exchanges) end the game.
