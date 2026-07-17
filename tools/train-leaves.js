@@ -69,7 +69,7 @@ function parseArgs(argv) {
     // silently append duplicate rows; pass --seed only to reproduce a run
     // (the seed used is logged and stored in the data file's meta line).
     samples: 60000, games: 16, seed: crypto.randomInt(1, 2 ** 31),
-    jobs: Math.max(1, Math.min(4, os.cpus().length - 1)),
+    jobs: null, // resolved after parsing: 1 for --record-only, else cpus (max 4)
     out: path.resolve(__dirname, '..', 'leaves.js'),
     data: path.resolve(__dirname, '..', 'data', 'leave-samples.jsonl'),
     fitOnly: false, recordOnly: false,
@@ -91,6 +91,11 @@ function parseArgs(argv) {
   if (opts.fitOnly && opts.recordOnly) {
     console.error('--fit-only and --record-only are mutually exclusive.');
     process.exit(2);
+  }
+  if (opts.jobs === null) {
+    // Recording chunks run in the background alongside other work
+    // (matches, refits), so by default they take a single core.
+    opts.jobs = opts.recordOnly ? 1 : Math.max(1, Math.min(4, os.cpus().length - 1));
   }
   return opts;
 }
