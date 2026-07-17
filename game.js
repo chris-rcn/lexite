@@ -1626,7 +1626,7 @@ async function collectTopCandidates(rack, k) {
 // ============================================================
 
 const SIM = {
-  CANDIDATES: 3,   // static candidates evaluated by simulation
+  CANDIDATES: 5,   // static candidates evaluated by simulation
   SAMPLES: 20,     // sampled worlds, shared across candidates
   CONFIDENCE: 1.5, // paired z threshold to overrule the static choice
   MIN_WORLDS: 6,   // worlds evaluated before pruning may trigger
