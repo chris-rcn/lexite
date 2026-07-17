@@ -210,7 +210,7 @@ async function playGame(engines, initialBag, verbose, label, onPosition) {
   draw(0); draw(1);
 
   let isFirstMove = true;
-  let passes = 0;
+  let scoreless = 0; // consecutive scoreless turns (passes and exchanges)
   let seat = 0;
   let moves = 0;
   let reason;
@@ -220,12 +220,26 @@ async function playGame(engines, initialBag, verbose, label, onPosition) {
     const move = await engines[seat].bestMove(board, racks[seat], isFirstMove, bag.length);
     moves++;
     if (!move) {
-      // No exchanges exist, so once both engines pass the position is
-      // stuck for good — two consecutive passes ends the game.
       if (verbose) console.log(`  [${label}] seat${seat}: pass`);
-      if (++passes >= 2) { reason = 'passes'; break; }
+      if (++scoreless >= 6) { reason = 'passes'; break; }
+    } else if (move.exchange) {
+      if (bag.length < 7) throw new Error('engine exchanged with fewer than 7 bag tiles');
+      const removed = [];
+      for (const t of move.tiles) {
+        const idx = racks[seat].findIndex(x =>
+          t.isBlank ? x.isBlank : (!x.isBlank && x.letter.toLowerCase() === t.letter.toLowerCase()));
+        if (idx === -1) throw new Error(`engine exchanged a tile not in its rack: ${JSON.stringify(t)}`);
+        removed.push(...racks[seat].splice(idx, 1));
+      }
+      draw(seat); // replacements come out before the discards return
+      // Discards go to the bottom of the bag (drawn last): deterministic
+      // without an RNG, and they cannot be immediately redrawn — the
+      // practical effect of a shuffle at these bag depths.
+      for (const t of removed) bag.unshift(t.isBlank ? '?' : t.letter);
+      if (verbose) console.log(`  [${label}] seat${seat}: exchanged ${removed.length}`);
+      if (++scoreless >= 6) { reason = 'passes'; break; }
     } else {
-      passes = 0;
+      scoreless = 0;
       for (const p of move.placements) {
         board[p.row][p.col] = { letter: p.letter, isBlank: p.isBlank, displayLetter: p.letter };
         const idx = racks[seat].findIndex(t =>

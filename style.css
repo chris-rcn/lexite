@@ -347,12 +347,49 @@ main {
   line-height: 1;
 }
 
-#btn-shuffle, #btn-recall {
+#btn-shuffle, #btn-recall, #btn-exchange {
   background: #e8e0d0;
   color: #3a2a00;
   flex: 1;
 }
-#btn-shuffle:hover, #btn-recall:hover { background: #d4c8b0; }
+#btn-shuffle:hover, #btn-recall:hover, #btn-exchange:hover { background: #d4c8b0; }
+
+/* Exchange mode */
+#exchange-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#exchange-hint {
+  flex: 1;
+  font-size: 0.8rem;
+  color: #666;
+}
+
+#exchange-confirm {
+  background: #2a7a3a;
+  color: #fff;
+  font-weight: 700;
+  padding: 9px 14px;
+}
+
+#exchange-confirm:hover { background: #228b32; }
+
+#exchange-cancel {
+  background: #e0e0e0;
+  color: #444;
+  padding: 9px 14px;
+}
+
+#exchange-cancel:hover { background: #ccc; }
+
+.rack-tile.exchange-marked {
+  border-color: #c0392b;
+  background: #ffd7c9;
+  transform: translateY(-6px);
+}
 
 /* ========================
    ACTION BUTTONS

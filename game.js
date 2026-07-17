@@ -63,6 +63,8 @@ const state = {
   pending: [],  // [{row, col, letter, isBlank, displayLetter}]
   selectedRackIdx: null,
   dragRackIdx: null,
+  exchangeMode: false,
+  exchangeSelected: new Set(), // rack indices marked for exchange
   wordSet: null,
   trie: null, // typed-array packed dictionary trie (built by ensureTrie)
   gameOver: false,
@@ -102,6 +104,9 @@ async function init() {
     document.getElementById('end-overlay').classList.add('hidden');
     newGame();
   });
+  document.getElementById('btn-exchange').addEventListener('click', enterExchangeMode);
+  document.getElementById('exchange-confirm').addEventListener('click', confirmExchange);
+  document.getElementById('exchange-cancel').addEventListener('click', exitExchangeMode);
   // Pass confirmation dialog (replaces the native confirm())
   const hidePassDialog = () => document.getElementById('pass-overlay').classList.add('hidden');
   document.getElementById('pass-confirm').addEventListener('click', () => {
@@ -177,6 +182,10 @@ function newGame() {
   state.lifelineUsed = false;
   state.playerTurnActive = true;
   state.gameId++;
+  state.exchangeMode = false;
+  state.exchangeSelected = new Set();
+  document.getElementById('exchange-bar').classList.add('hidden');
+  document.getElementById('action-buttons').classList.remove('hidden');
 
   drawTiles(state.playerRack, 7);
   drawTiles(state.computerRack, 7);
@@ -207,6 +216,20 @@ function drawTiles(rack, n) {
     const raw = state.bag.pop();
     rack.push({ letter: raw, isBlank: raw === '?' });
   }
+}
+
+// Execute an exchange for a rack: replacements are drawn first (so the
+// discards cannot be immediately redrawn), then the discards return to
+// the bag and it is reshuffled. Callers handle logging and turn flow.
+function executeExchange(rack, tiles) {
+  for (const t of tiles) {
+    const idx = rack.findIndex(x =>
+      t.isBlank ? x.isBlank : (!x.isBlank && x.letter === t.letter));
+    if (idx !== -1) rack.splice(idx, 1);
+  }
+  drawTiles(rack, tiles.length);
+  for (const t of tiles) state.bag.push(t.isBlank ? '?' : t.letter);
+  shuffleArray(state.bag);
 }
 
 function shuffleArray(arr) {
@@ -318,6 +341,7 @@ let scoreBubbleEl  = null; // cached after DOM ready
 
 function onTouchTileStart(e, idx) {
   if (!state.playerTurnActive) return;
+  if (state.exchangeMode) { e.preventDefault(); onRackTileClick(idx); return; }
   e.preventDefault();
 
   state.dragRackIdx = idx;
@@ -442,7 +466,8 @@ function renderRack() {
   state.playerRack.forEach((tile, idx) => {
     const el = document.createElement('div');
     el.className = 'rack-tile' + (tile.isBlank ? ' blank-tile' : '');
-    if (idx === state.selectedRackIdx) el.classList.add('selected');
+    if (idx === state.selectedRackIdx && !state.exchangeMode) el.classList.add('selected');
+    if (state.exchangeMode && state.exchangeSelected.has(idx)) el.classList.add('exchange-marked');
     el.textContent = tile.isBlank ? '' : tile.letter;
     const pts = document.createElement('span');
     pts.className = 'tile-points';
@@ -450,7 +475,7 @@ function renderRack() {
     el.appendChild(pts);
     el.setAttribute('draggable', 'true');
     el.addEventListener('dragstart', (e) => {
-      if (!state.playerTurnActive) { e.preventDefault(); return; }
+      if (!state.playerTurnActive || state.exchangeMode) { e.preventDefault(); return; }
       state.dragRackIdx = idx;
       state.selectedRackIdx = idx;
       // Firefox refuses to start a drag unless some data is set.
@@ -593,10 +618,12 @@ function showMoveError(msg) {
 
 function enablePlayerControls(on) {
   state.playerTurnActive = on;
+  if (!on && state.exchangeMode) exitExchangeMode();
   document.getElementById('btn-play').disabled = !on;
   document.getElementById('btn-lifeline').disabled = !on || state.lifelineUsed;
   document.getElementById('btn-shuffle').disabled = !on;
   document.getElementById('btn-recall').disabled = !on;
+  document.getElementById('btn-exchange').disabled = !on || state.bag.length < 7;
 }
 
 // ============================================================
@@ -605,12 +632,19 @@ function enablePlayerControls(on) {
 
 function onRackTileClick(idx) {
   if (!state.playerTurnActive) return;
+  if (state.exchangeMode) {
+    if (state.exchangeSelected.has(idx)) state.exchangeSelected.delete(idx);
+    else state.exchangeSelected.add(idx);
+    updateExchangeConfirm();
+    renderRack();
+    return;
+  }
   state.selectedRackIdx = idx;
   renderRack();
 }
 
 function onCellClick(r, c) {
-  if (!state.playerTurnActive) return;
+  if (!state.playerTurnActive || state.exchangeMode) return;
 
   const cellEmpty = state.board[r][c] === null &&
                     !state.pending.some(p => p.row === r && p.col === c);
@@ -639,7 +673,7 @@ function onCellClick(r, c) {
 }
 
 function onCellDrop(r, c) {
-  if (!state.playerTurnActive) return;
+  if (!state.playerTurnActive || state.exchangeMode) return;
   if (state.dragRackIdx === null) return;
   if (state.board[r][c] !== null) return;
   if (state.pending.some(p => p.row === r && p.col === c)) return;
@@ -681,6 +715,53 @@ function shufflePlayerRack() {
   shuffleArray(state.playerRack);
   state.selectedRackIdx = null;
   renderRack();
+}
+
+// ============================================================
+// EXCHANGE MODE
+// ============================================================
+
+function enterExchangeMode() {
+  if (!state.playerTurnActive || state.bag.length < 7 || state.exchangeMode) return;
+  recallAllTiles();
+  state.exchangeMode = true;
+  state.exchangeSelected = new Set();
+  state.selectedRackIdx = null;
+  document.getElementById('action-buttons').classList.add('hidden');
+  document.getElementById('exchange-bar').classList.remove('hidden');
+  updateExchangeConfirm();
+  renderRack();
+}
+
+function exitExchangeMode() {
+  state.exchangeMode = false;
+  state.exchangeSelected = new Set();
+  document.getElementById('exchange-bar').classList.add('hidden');
+  document.getElementById('action-buttons').classList.remove('hidden');
+  renderRack();
+}
+
+function updateExchangeConfirm() {
+  const n = state.exchangeSelected.size;
+  const btn = document.getElementById('exchange-confirm');
+  btn.disabled = n === 0;
+  btn.textContent = `Exchange (${n})`;
+}
+
+function confirmExchange() {
+  const tiles = [...state.exchangeSelected].map(i => state.playerRack[i]);
+  if (tiles.length === 0) return;
+  exitExchangeMode();
+  executeExchange(state.playerRack, tiles);
+  state.consecutivePasses++;
+  const k = tiles.length;
+  logEntry(`You: exchanged ${k} tile${k > 1 ? 's' : ''}`, 'player');
+  renderRack();
+  updateBagCount();
+  if (checkGameOver()) return;
+  enablePlayerControls(false);
+  state.turn = 'computer';
+  setTimeout(computerTurn, 300);
 }
 
 // ============================================================
@@ -1107,6 +1188,14 @@ async function lifelineTurn() {
     state.consecutivePasses++;
     logEntry(`You: passed in ${ms}ms [lifeline]`, 'player');
     if (checkGameOver()) return;
+  } else if (move.exchange) {
+    executeExchange(state.playerRack, move.tiles);
+    state.consecutivePasses++;
+    const k = move.tiles.length;
+    logEntry(`You: exchanged ${k} tile${k > 1 ? 's' : ''} in ${ms}ms [lifeline]`, 'player');
+    renderRack();
+    updateBagCount();
+    if (checkGameOver()) return;
   } else {
     state.lastPlay = new Set();
     for (const p of move.placements) {
@@ -1156,6 +1245,11 @@ async function computerTurn() {
   if (!move) {
     state.consecutivePasses++;
     logEntry(`Computer: passed in ${ms}ms`, 'computer');
+  } else if (move.exchange) {
+    executeExchange(state.computerRack, move.tiles);
+    state.consecutivePasses++;
+    const k = move.tiles.length;
+    logEntry(`Computer: exchanged ${k} tile${k > 1 ? 's' : ''} in ${ms}ms`, 'computer');
   } else {
     state.lastPlay = new Set();
     for (const p of move.placements) {
@@ -1752,21 +1846,69 @@ function tileCounts(tiles) {
   return counts;
 }
 
+// The best tiles to keep when exchanging, ranked by leave value across
+// every proper subset of the rack (at least one tile must go back).
+// Returns { keep, tiles } or null when no leave model is loaded.
+function bestExchangeKeep(rack) {
+  if (!leaveTables) return null;
+  const n = rack.length;
+  if (n === 0) return null;
+  const counts = new Int32Array(27);
+  let bestVal = -Infinity;
+  let bestMask = -1;
+  for (let mask = 0; mask < (1 << n) - 1; mask++) { // excludes keep-all
+    counts.fill(0);
+    for (let i = 0; i < n; i++) {
+      if (mask & (1 << i)) {
+        counts[rack[i].isBlank ? 26 : rack[i].letter.toUpperCase().charCodeAt(0) - 65]++;
+      }
+    }
+    const v = leaveValueFromCounts(counts);
+    if (v > bestVal) { bestVal = v; bestMask = mask; }
+  }
+  const keep = [], tiles = [];
+  for (let i = 0; i < n; i++) {
+    (bestMask & (1 << i) ? keep : tiles).push(rack[i]);
+  }
+  return { keep, tiles };
+}
+
 // Choose among the top static candidates by 2-ply simulation: sample the
 // unseen tiles into opponent rack + draw order (the same worlds for every
 // candidate — common random numbers), play the candidate, let the sampled
 // opponent answer with its static best, and value the outcome as score
 // differential plus the damped leave differential at the horizon. The
 // candidate with the best mean wins; ties keep static order.
+//
+// With 7+ tiles in the bag, the best exchange (per bestExchangeKeep) is
+// one more arm: it scores zero, touches no board cells, and redraws from
+// the sampled world — the playout prices it in the same margin units as
+// the moves, and the confidence gate means the engine only exchanges
+// when that is confidently better than the best move.
 async function findBestSimMove(rack) {
   const cands = await collectTopCandidates(rack, SIM.CANDIDATES);
-  if (cands.length === 0) return null;
-  if (cands.length === 1) return cands[0].m;
+  const exchange = state.bag.length >= 7 ? bestExchangeKeep(rack) : null;
+  if (cands.length === 0) {
+    // No legal move: exchange beats passing whenever it is allowed.
+    return exchange ? { exchange: true, tiles: exchange.tiles } : null;
+  }
+
+  // Arms: move candidates in static order (arm 0 is the incumbent),
+  // then the exchange as a challenger.
+  const arms = cands.map(c => ({
+    move: c.m, placements: c.m.placements, score: c.m.score,
+    kept: rackWithout(rack, c.m.placements),
+  }));
+  if (exchange) {
+    arms.push({ move: null, placements: null, score: 0, kept: exchange.keep, tiles: exchange.tiles });
+  }
+  const armResult = a => a.move ? a.move : { exchange: true, tiles: a.tiles };
+  if (arms.length === 1) return armResult(arms[0]);
 
   const realBag = state.bag;
   const pool = deriveOpponentRack(rack); // unseen tiles: bag + opponent rack
   const oppSize = pool.length - realBag.length;
-  if (oppSize <= 0) return cands[0].m;
+  if (oppSize <= 0) return armResult(arms[0]);
 
   const rng = seededRng(positionHash(rack));
   const worlds = [];
@@ -1794,12 +1936,11 @@ async function findBestSimMove(rack) {
   };
 
   inSimulation = true;
-  const K = cands.length;
+  const K = arms.length;
   const M = worlds.length;
   const toTerminal = realBag.length < SIM.TERMINAL_BAG;
-  const vals = Array.from({ length: K }, () => []); // vals[candidate][world]
+  const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
-  const kept = cands.map(c => rackWithout(rack, c.m.placements));
   try {
     // World-major so surviving candidates advance together and pruning
     // can retire hopeless challengers early.
@@ -1807,15 +1948,15 @@ async function findBestSimMove(rack) {
       const world = worlds[w];
       for (let ci = 0; ci < K; ci++) {
         if (!alive[ci]) continue;
-        const m = cands[ci].m;
-        const myKept = kept[ci];
-        applyToBoard(m.placements);
+        const arm = arms[ci];
+        const myKept = arm.kept;
+        if (arm.placements) applyToBoard(arm.placements);
         if (toTerminal) {
           // Near the endgame the sampled world is cheap to finish: play
           // it out and score the exact final margin — no horizon
           // heuristic, and the leave taper plays no evaluation role.
-          vals[ci].push(await simPlayoutValue(m.score, myKept, world, oppSize));
-          removeFromBoard(m.placements);
+          vals[ci].push(await simPlayoutValue(arm.score, myKept, world, oppSize));
+          if (arm.placements) removeFromBoard(arm.placements);
           continue;
         }
         const oppRack = world.slice(0, oppSize);
@@ -1825,7 +1966,10 @@ async function findBestSimMove(rack) {
         cursor += myDraw;
 
         // Opponent answers on the post-move board; only the simulated
-        // bag's length matters (leave damping / endgame switch).
+        // bag's length matters (leave damping / endgame switch). For an
+        // exchange arm the discards rejoin the real bag, so its length
+        // is unchanged; the sampled draw order simply skips them (they
+        // cannot be redrawn immediately anyway).
         state.bag = world.slice(cursor);
         const reply = await findBestMove(oppRack);
         const rScore = reply ? reply.score : 0;
@@ -1839,8 +1983,8 @@ async function findBestSimMove(rack) {
           horizon = scaleH *
             (leaveValueFromCounts(tileCounts(myNew)) - leaveValueFromCounts(tileCounts(oppNew)));
         }
-        vals[ci].push(m.score - rScore + horizon);
-        removeFromBoard(m.placements);
+        vals[ci].push(arm.score - rScore + horizon);
+        if (arm.placements) removeFromBoard(arm.placements);
       }
 
       // Prune challengers that are confidently worse than the incumbent —
@@ -1873,7 +2017,7 @@ async function findBestSimMove(rack) {
     if (mean <= 0) continue;
     if (se === 0 || mean > SIM.CONFIDENCE * se) bestIdx = ci;
   }
-  return cands[bestIdx].m;
+  return armResult(arms[bestIdx]);
 }
 
 // Find the best legal move for the given rack. With an empty bag this is
@@ -2082,7 +2226,7 @@ function checkGameOver() {
   const computerEmpty = state.computerRack.length === 0;
 
   if (state.consecutivePasses >= 6) {
-    endGame('Six consecutive passes. Game over.');
+    endGame('Six consecutive scoreless turns. Game over.');
     return true;
   }
   if (bagEmpty && (playerEmpty || computerEmpty)) {
