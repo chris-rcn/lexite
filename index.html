@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lexite - Word Game</title>
-  <link rel="stylesheet" href="style.css?v=19">
+  <link rel="stylesheet" href="style.css?v=20">
 </head>
 <body>
 
@@ -99,6 +99,18 @@
       <div id="pass-buttons">
         <button id="pass-confirm">Pass</button>
         <button id="pass-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New game confirmation -->
+  <div id="newgame-overlay" class="hidden">
+    <div class="confirm-dialog">
+      <div class="confirm-title">Start a new game?</div>
+      <div class="confirm-text">The current game will be lost.</div>
+      <div class="confirm-buttons">
+        <button id="newgame-confirm">New Game</button>
+        <button id="newgame-cancel">Cancel</button>
       </div>
     </div>
   </div>

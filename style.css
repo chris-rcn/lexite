@@ -609,10 +609,10 @@ main {
 #blank-cancel:hover { background: #ccc; }
 
 /* ========================
-   PASS CONFIRMATION DIALOG
+   CONFIRMATION DIALOGS (pass, new game)
    ======================== */
 
-#pass-overlay {
+#pass-overlay, #newgame-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,0.6);
@@ -622,7 +622,7 @@ main {
   z-index: 100;
 }
 
-#pass-dialog {
+#pass-dialog, .confirm-dialog {
   background: #fff;
   border-radius: 10px;
   padding: 22px 26px;
@@ -632,25 +632,25 @@ main {
   text-align: center;
 }
 
-#pass-title {
+#pass-title, .confirm-title {
   font-weight: 700;
   font-size: 1.05rem;
   color: #2c1a00;
   margin-bottom: 6px;
 }
 
-#pass-text {
+#pass-text, .confirm-text {
   font-size: 0.85rem;
   color: #666;
   margin-bottom: 16px;
 }
 
-#pass-buttons {
+#pass-buttons, .confirm-buttons {
   display: flex;
   gap: 8px;
 }
 
-#pass-confirm {
+#pass-confirm, #newgame-confirm {
   flex: 1;
   background: #2a7a3a;
   color: #fff;
@@ -658,16 +658,16 @@ main {
   padding: 9px;
 }
 
-#pass-confirm:hover { background: #228b32; }
+#pass-confirm:hover, #newgame-confirm:hover { background: #228b32; }
 
-#pass-cancel {
+#pass-cancel, #newgame-cancel {
   flex: 1;
   background: #e0e0e0;
   color: #444;
   padding: 9px;
 }
 
-#pass-cancel:hover { background: #ccc; }
+#pass-cancel:hover, #newgame-cancel:hover { background: #ccc; }
 
 /* ========================
    END GAME DIALOG

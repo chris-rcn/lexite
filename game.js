@@ -84,7 +84,7 @@ const state = {
 
 async function init() {
   buildBlankLetterGrid();
-  document.getElementById('btn-new-game').addEventListener('click', newGame);
+  document.getElementById('btn-new-game').addEventListener('click', requestNewGame);
   document.getElementById('btn-shuffle').addEventListener('click', shufflePlayerRack);
   document.getElementById('btn-lifeline').addEventListener('click', lifelineTurn);
   document.getElementById('btn-recall').addEventListener('click', recallAllTiles);
@@ -116,6 +116,16 @@ async function init() {
   document.getElementById('pass-cancel').addEventListener('click', hidePassDialog);
   document.getElementById('pass-overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('pass-overlay')) hidePassDialog();
+  });
+  // New game confirmation dialog
+  const hideNewGameDialog = () => document.getElementById('newgame-overlay').classList.add('hidden');
+  document.getElementById('newgame-confirm').addEventListener('click', () => {
+    hideNewGameDialog();
+    newGame();
+  });
+  document.getElementById('newgame-cancel').addEventListener('click', hideNewGameDialog);
+  document.getElementById('newgame-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('newgame-overlay')) hideNewGameDialog();
   });
   // The end dialog can be dismissed to inspect the final board — via the
   // View Board button or a click on the backdrop.
@@ -163,6 +173,16 @@ function showLoadError(err) {
 // ============================================================
 // NEW GAME
 // ============================================================
+
+// New Game button: confirm first if a game is in progress; once the game
+// is over there is nothing to lose, so start immediately.
+function requestNewGame() {
+  if (state.gameOver) {
+    newGame();
+  } else {
+    document.getElementById('newgame-overlay').classList.remove('hidden');
+  }
+}
 
 function newGame() {
   state.board = Array.from({length:15}, () => new Array(15).fill(null));
