@@ -54,6 +54,11 @@ The game uses an open-source, public-domain word list, plus a small house
 patch of common modern words it omits. The additions are our own editorial
 selection — not a copy of any copyrighted tournament word list.
 
+The browser loads a gzipped copy (`words.txt.gz`, ~4× smaller) and inflates
+it client-side, falling back to `words.txt` if needed. `words.txt` is the
+source of truth — after editing it, regenerate the gzip with
+`gzip -9 -k -f words.txt`.
+
 ## Comparing Engine Versions
 
 `tools/match.js` plays two versions of the move engine against each other

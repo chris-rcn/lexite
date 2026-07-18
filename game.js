@@ -155,13 +155,33 @@ async function init() {
 }
 
 async function loadWordList() {
-  const resp = await fetch('words.txt');
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  const text = await resp.text();
+  const text = await fetchWordListText();
   state.wordSet = new Set(
     text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2)
   );
   ensureTrie();
+}
+
+// Prefer the gzipped word list (~4x smaller: ~450 KB vs ~1.7 MB) and inflate
+// it in the browser. Fall back to the plain words.txt if the browser lacks
+// DecompressionStream or the .gz is missing, so the game still loads either
+// way. NOTE: words.txt.gz is generated from words.txt — regenerate it
+// (`gzip -9 -k -f words.txt`) whenever the word list changes.
+async function fetchWordListText() {
+  if (typeof DecompressionStream === 'function') {
+    try {
+      const resp = await fetch('words.txt.gz');
+      if (resp.ok && resp.body) {
+        const stream = resp.body.pipeThrough(new DecompressionStream('gzip'));
+        return await new Response(stream).text();
+      }
+    } catch (e) {
+      // Corrupt/absent .gz or a decode error — fall back to the plain file.
+    }
+  }
+  const resp = await fetch('words.txt');
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return await resp.text();
 }
 
 function showLoadError(err) {
