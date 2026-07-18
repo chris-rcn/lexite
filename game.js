@@ -666,6 +666,19 @@ function onRackTileClick(idx) {
 function onCellClick(r, c) {
   if (!state.playerTurnActive || state.exchangeMode) return;
 
+  // Click a candidate (this-turn) tile to return just that tile to the
+  // rack. Committed board tiles are not in `pending`, so they stay inert.
+  const pendingIdx = state.pending.findIndex(p => p.row === r && p.col === c);
+  if (pendingIdx !== -1) {
+    const p = state.pending.splice(pendingIdx, 1)[0];
+    state.playerRack.push({ letter: p.isBlank ? '?' : p.letter, isBlank: p.isBlank });
+    state.selectedRackIdx = null;
+    renderRack();
+    renderBoard();
+    updateScoreBubble();
+    return;
+  }
+
   const cellEmpty = state.board[r][c] === null &&
                     !state.pending.some(p => p.row === r && p.col === c);
 
