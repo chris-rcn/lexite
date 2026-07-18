@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Lexite game tile: cream face, brown edge, bold letter + point value -->
+  <rect x="7" y="7" width="50" height="50" rx="7" fill="#f5deb3" stroke="#8b5a2b" stroke-width="3"/>
+  <text x="30" y="46" text-anchor="middle" fill="#1a0a00"
+        font-family="Helvetica, Arial, sans-serif" font-weight="900" font-size="40">L</text>
+  <text x="48" y="51" text-anchor="middle" fill="#1a0a00"
+        font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="15">1</text>
+</svg>
