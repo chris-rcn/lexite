@@ -2,11 +2,11 @@
 // Train the rack-leave model (leaves.js) and record its training data.
 //
 // Usage:
-//   node tools/train-leaves.js [--samples N] [--seed S]
+//   node tools/train-leaves.js [--samples N] [--reuse R] [--seed S]
 //                              [--jobs J] [--out leaves.js] [--data FILE]
 //                              [--fit-only | --record-only]
 //
-// Defaults: --samples 60000 --jobs (cpus, max 4)
+// Defaults: --samples 60000 --reuse 8 --jobs (cpus, max 4)
 //           --data data/leave-samples.jsonl
 //           --seed random (logged, and stored in the data file's meta
 //           line; pass --seed explicitly only to reproduce a past run)
@@ -22,16 +22,20 @@
 //   --record-only  sample and append more data without refitting
 // A normal run records new rows and then fits on the ENTIRE data file.
 //
-// Method: play seeded greedy self-play and draw exactly ONE random 7-tile
-// rack per board reached (bag >= 8) — the first 0-6 tiles of the draw are
-// the "leave" — then measure the best next-move score a plain greedy
-// engine achieves with that rack. One sample per board means boards are
-// never oversampled, so each sample is a near-independent observation. A
-// ridge regression of score on leave features (per-letter counts and all
-// unordered letter-pair counts; same-letter pairs encode duplicates, and
-// synergies like QU emerge as pair weights) estimates each kept tile's
-// marginal contribution. The pipeline is seeded and deterministic; both
-// the self-play and the sampling fan out over workers on disjoint seeds.
+// Method: play seeded greedy self-play and draw `reuse` random 7-tile racks
+// per board reached (bag >= 8) — the first 0-6 tiles of each draw are the
+// "leave" — then measure the best next-move score a plain greedy engine
+// achieves with that rack. Board count (= samples / reuse) drives the
+// estimate's variance; racks are drawn independently of the board, so
+// reuse does not bias the weights, only trades a little independence for
+// much cheaper generation. --reuse 1 is one sample per board (no
+// oversampling, slowest); the default 8 keeps thousands of boards while
+// running ~4x faster. A ridge regression of score on leave features
+// (per-letter counts and all unordered letter-pair counts; same-letter
+// pairs encode duplicates, and synergies like QU emerge as pair weights)
+// estimates each kept tile's marginal contribution. The pipeline is seeded
+// and deterministic; self-play and sampling fan out over workers on
+// disjoint seeds.
 //
 // The evaluation engine is a copy of game.js placed in a directory with
 // no leaves.js, so training always measures the greedy engine, never an
@@ -69,7 +73,7 @@ function parseArgs(argv) {
     // seed defaults to a random value so repeated recording runs can never
     // silently append duplicate rows; pass --seed only to reproduce a run
     // (the seed used is logged and stored in the data file's meta line).
-    samples: 60000, games: 16, seed: crypto.randomInt(1, 2 ** 31),
+    samples: 60000, reuse: 8, seed: crypto.randomInt(1, 2 ** 31),
     jobs: null, // resolved after parsing: 1 for --record-only, else cpus (max 4)
     out: path.resolve(__dirname, '..', 'leaves.js'),
     data: path.resolve(__dirname, '..', 'data', 'leave-samples.jsonl'),
@@ -79,7 +83,7 @@ function parseArgs(argv) {
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--samples') opts.samples = parseInt(argv[++i], 10);
-    else if (arg === '--games') opts.games = parseInt(argv[++i], 10);
+    else if (arg === '--reuse') opts.reuse = Math.max(1, parseInt(argv[++i], 10));
     else if (arg === '--seed') opts.seed = parseInt(argv[++i], 10);
     else if (arg === '--jobs') opts.jobs = parseInt(argv[++i], 10);
     else if (arg === '--out') opts.out = path.resolve(process.cwd(), argv[++i]);
@@ -130,9 +134,11 @@ async function runWorkerJob(spec) {
   const engine = loadEngine(spec.engineFile, loadWords(), { staticOnly: true });
   const rng = mulberry32(spec.seed);
 
-  // No oversampling: play seeded greedy self-play and draw exactly ONE rack
-  // per harvested board, so a board is never reused across samples. Keep
-  // playing fresh games until this worker has produced its share of rows.
+  // Bounded oversampling: play seeded greedy self-play and draw `reuse`
+  // racks per harvested board (reuse=1 => one per board, no oversampling).
+  // Board count = samples / reuse drives the variance; a modest reuse keeps
+  // generation cheap without collapsing to a handful of boards. Keep playing
+  // fresh games until this worker has produced its share of rows.
   const rows = [];
   let g = 0;
   while (rows.length < spec.count) {
@@ -148,17 +154,20 @@ async function runWorkerJob(spec) {
     });
     for (const pos of positions) {
       if (rows.length >= spec.count) break;
-      const pool = pos.bag.slice();
-      // Draw 7 random tiles (partial Fisher-Yates); the first `l` are the leave
-      for (let k = 0; k < 7; k++) {
-        const j = k + Math.floor(rng() * (pool.length - k));
-        [pool[k], pool[j]] = [pool[j], pool[k]];
+      const bagCount = pos.bag.length - 7;
+      for (let r = 0; r < spec.reuse && rows.length < spec.count; r++) {
+        const pool = pos.bag.slice();
+        // Draw 7 random tiles (partial Fisher-Yates); the first `l` are the leave
+        for (let k = 0; k < 7; k++) {
+          const j = k + Math.floor(rng() * (pool.length - k));
+          [pool[k], pool[j]] = [pool[j], pool[k]];
+        }
+        const l = Math.floor(rng() * 7); // leave size 0..6
+        const leave = pool.slice(0, l).map(ch => ch.toUpperCase()).sort().join('');
+        const rack = pool.slice(0, 7).map(ch => ({ letter: ch, isBlank: ch === '?' }));
+        const move = await engine.bestMove(pos.board, rack, pos.isFirstMove, bagCount);
+        rows.push({ l: leave, y: move ? move.score : 0 });
       }
-      const l = Math.floor(rng() * 7); // leave size 0..6
-      const leave = pool.slice(0, l).map(ch => ch.toUpperCase()).sort().join('');
-      const rack = pool.slice(0, 7).map(ch => ({ letter: ch, isBlank: ch === '?' }));
-      const move = await engine.bestMove(pos.board, rack, pos.isFirstMove, pos.bag.length - 7);
-      rows.push({ l: leave, y: move ? move.score : 0 });
     }
   }
   process.stdout.write(JSON.stringify({ rows: rows.slice(0, spec.count) }));
@@ -291,14 +300,14 @@ async function main() {
   // is oversampled. Distinct per-worker game seeds keep their games (and
   // thus boards) disjoint.
   console.log(`Sampling ${opts.samples} leaves over ${opts.jobs} workers ` +
-    `(one per board, no oversampling; seed ${opts.seed})...`);
+    `(reuse ${opts.reuse}/board, ~${Math.ceil(opts.samples / opts.reuse)} boards; seed ${opts.seed})...`);
   const specs = [];
   const per = Math.ceil(opts.samples / opts.jobs);
   for (let j = 0; j < opts.jobs; j++) {
     const count = Math.min(per, opts.samples - j * per);
     if (count <= 0) break;
     specs.push({
-      engineFile, count,
+      engineFile, count, reuse: opts.reuse,
       seed: opts.seed * 1000003 + j,
       gameSeed: opts.seed * 7919 + j * 100003 + 1,
     });
