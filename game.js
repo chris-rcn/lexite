@@ -672,7 +672,8 @@ function onCellClick(r, c) {
   if (pendingIdx !== -1) {
     const p = state.pending.splice(pendingIdx, 1)[0];
     state.playerRack.push({ letter: p.isBlank ? '?' : p.letter, isBlank: p.isBlank });
-    state.selectedRackIdx = null;
+    // Select the returned tile so it is ready to re-place immediately.
+    state.selectedRackIdx = state.playerRack.length - 1;
     renderRack();
     renderBoard();
     updateScoreBubble();
