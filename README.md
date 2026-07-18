@@ -59,6 +59,8 @@ The game uses the ENABLE word list, which is in the public domain
   of the already-listed CADI / KADI).
 - Plurals of the patched two-letter words: ZAS, ZOS, KIS, OIS, TES, so an
   S can hook them into a parallel play.
+- A high-value J word ENABLE omits: JUCO / JUCOS (a junior college), an
+  out for the 8-point J.
 
 These additions are our own editorial selection, in the same spirit as
 ENABLE itself — not a copy of any copyrighted tournament list.
