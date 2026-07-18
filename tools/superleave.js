@@ -105,6 +105,63 @@ function linearValue(counts, W) {
   return v;
 }
 
+// leave string ("EEQ", "?S", "") -> counts vector
+function leaveStringToCounts(l) {
+  const counts = new Int32Array(NTYPES);
+  for (const ch of l) counts[ch === '?' ? 26 : ch.toUpperCase().charCodeAt(0) - 65]++;
+  return counts;
+}
+
+// ---- refine the table from recorded {l, y} samples ------------------------
+// Empirical-Bayes shrinkage of each leave's value toward the linear prior:
+//   value(L) = (K*prior(L) + n*(meanY(L) - intercept)) / (K + n)
+// prior/table values are in the linear model's centered units, so the
+// intercept (absolute best-move baseline) is estimated from the data and
+// removed. Leaves with no samples keep the prior; K is the prior's
+// equivalent sample size (bigger K = more shrinkage / less trust in noisy
+// per-leave means).
+function refineTable(weights, dataFile, K) {
+  const sumY = new Float64Array(TABLE_SIZE);
+  const n = new Int32Array(TABLE_SIZE);
+  let totalY = 0, totalN = 0;
+  const text = fs.readFileSync(dataFile, 'utf8');
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.meta) continue;
+    const r = leaveRank(leaveStringToCounts(o.l));
+    sumY[r] += o.y; n[r]++; totalY += o.y; totalN++;
+  }
+  // prior for every leave (linear model, centered units)
+  const prior = new Float32Array(TABLE_SIZE);
+  for (let r = 0; r < TABLE_SIZE; r++) prior[r] = linearValue(leaveUnrank(r), weights);
+  // intercept = mean residual (y - prior) over samples
+  let sumLV = 0;
+  for (let r = 0; r < TABLE_SIZE; r++) if (n[r]) sumLV += n[r] * prior[r];
+  const intercept = (totalY - sumLV) / totalN;
+
+  const table = new Uint8Array(TABLE_SIZE);
+  let moved = 0, sumAbsShift = 0, maxShift = 0, sampled1 = 0, sampled30 = 0, clip = 0;
+  for (let r = 0; r < TABLE_SIZE; r++) {
+    let val = prior[r];
+    if (n[r] > 0) {
+      sampled1++;
+      if (n[r] >= 30) sampled30++;
+      const emp = sumY[r] / n[r] - intercept;
+      val = (K * prior[r] + n[r] * emp) / (K + n[r]);
+      const shift = Math.abs(val - prior[r]);
+      if (shift > 0.01) { moved++; sumAbsShift += shift; if (shift > maxShift) maxShift = shift; }
+    }
+    if (val < VALUE_MIN || val > VALUE_MAX) clip++;
+    table[r] = encodeValue(val);
+  }
+  return {
+    table, intercept, K, totalN,
+    sampled1, sampled30, moved,
+    meanShift: moved ? sumAbsShift / moved : 0, maxShift, clip,
+  };
+}
+
 // ---- build the seeded table -----------------------------------------------
 function buildSeedTable(weights) {
   const table = new Uint8Array(TABLE_SIZE);
@@ -166,6 +223,30 @@ function main() {
     return;
   }
 
+  if (cmd === 'refine') {
+    const arg = f => { const i = process.argv.indexOf(f); return i === -1 ? null : process.argv[i + 1]; };
+    const data = arg('--data') ? path.resolve(process.cwd(), arg('--data')) : path.join(repo, 'data', 'leave-samples.jsonl');
+    const K = arg('--k') ? parseFloat(arg('--k')) : 50;
+    let out = arg('--out') ? path.resolve(process.cwd(), arg('--out')) : path.join(repo, 'leaves.bin.gz');
+    const res = refineTable(weights, data, K);
+    const gz = zlib.gzipSync(Buffer.from(res.table.buffer), { level: 9 });
+    fs.writeFileSync(out, gz);
+    console.log(`Wrote ${out}  (${(res.table.length / 1024).toFixed(0)} KB raw, ${(gz.length / 1024).toFixed(0)} KB gzip)`);
+    console.log(`  samples ${res.totalN.toLocaleString()}, K=${res.K}, estimated intercept ${res.intercept.toFixed(2)}`);
+    console.log(`  leaves sampled: ${res.sampled1.toLocaleString()} (>=1), ${res.sampled30.toLocaleString()} (>=30), of ${TABLE_SIZE.toLocaleString()}`);
+    console.log(`  moved from prior: ${res.moved.toLocaleString()}  mean |shift| ${res.meanShift.toFixed(2)}  max ${res.maxShift.toFixed(2)}  clipped ${res.clip}`);
+    // spot check common leaves: prior vs refined
+    const table = res.table;
+    const show = ['', 'S', '?', 'E', 'EE', 'II', 'QU', 'Q', '?S', 'ER', 'AI', 'SS'];
+    console.log('  leave   prior   refined');
+    for (const l of show) {
+      const counts = leaveStringToCounts(l);
+      const r = leaveRank(counts);
+      console.log(`    ${(l || '(none)').padEnd(6)} ${linearValue(counts, weights).toFixed(2).padStart(6)}  ${decodeValue(table[r]).toFixed(2).padStart(6)}`);
+    }
+    return;
+  }
+
   if (cmd === 'build') {
     let out = path.join(repo, 'leaves.bin.gz');
     const oi = process.argv.indexOf('--out');
@@ -186,6 +267,7 @@ module.exports = {
   NTYPES, MAX_LEAVE, CAP, TABLE_SIZE, G,
   leaveRank, leaveUnrank, encodeValue, decodeValue, VALUE_SCALE, VALUE_ZERO,
   loadLinearWeights, linearValue, buildSeedTable, codeToChar,
+  leaveStringToCounts, refineTable,
 };
 
 if (require.main === module) main();
