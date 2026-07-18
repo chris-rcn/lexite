@@ -128,6 +128,10 @@ function loadEngine(file, words, opts = {}) {
   // (an engine version and its trained weights travel as a pair).
   const leavesPath = path.join(path.dirname(path.resolve(file)), 'leaves.js');
   const leavesCode = fs.existsSync(leavesPath) ? fs.readFileSync(leavesPath, 'utf8') : null;
+  // An optional superleave table (leaves.bin.gz) next to the engine file
+  // overrides the linear leave model, matching what the browser fetches.
+  const superPath = path.join(path.dirname(path.resolve(file)), 'leaves.bin.gz');
+  const superBytes = fs.existsSync(superPath) ? zlib.gunzipSync(fs.readFileSync(superPath)) : null;
   // Minimal browser-global stubs so game.js evaluates headlessly. All DOM
   // access lives inside functions the harness never calls.
   const sandbox = {
@@ -149,11 +153,19 @@ function loadEngine(file, words, opts = {}) {
   // millions of times per move, and reads of a host-realm object would
   // cross the vm membrane and slow the search down badly.
   sandbox.__WORDS = words;
+  // Pass the table as a latin1 string (one membrane value); the context
+  // rebuilds an in-realm Uint8Array so per-lookup reads stay fast.
+  sandbox.__SUPERLEAVE_STR = superBytes ? superBytes.toString('latin1') : '';
   vm.runInContext(`
     state.wordSet = new Set(__WORDS);
     state.wordsByLength = Array.from({length: 16}, () => []);
     for (const w of state.wordSet) {
       if (w.length <= 15) state.wordsByLength[w.length].push(w);
+    }
+    if (__SUPERLEAVE_STR && typeof installSuperTable === 'function') {
+      const s = __SUPERLEAVE_STR, t = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) t[i] = s.charCodeAt(i);
+      installSuperTable(t);
     }
     if (${opts.staticOnly ? 'true' : 'false'} && typeof SIM !== 'undefined') SIM.CANDIDATES = 1;
     globalThis.__bestMove = (positionJson) => {

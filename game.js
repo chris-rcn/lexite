@@ -151,6 +151,7 @@ async function init() {
     showLoadError(e);
     return;
   }
+  await loadSuperTable(); // best-effort; leaves the linear model in place on failure
   enablePlayerControls(true);
 }
 
@@ -1472,6 +1473,49 @@ function computeCrossData(r, c, moveIsHoriz, i, maskArr, sumArr, hasArr) {
 // tools/train-leaves.js, loaded from leaves.js). For the hot path the
 // weights are compiled once into typed arrays indexed by letter code
 // (0-25 = A-Z, 26 = blank).
+// ---- Superleave table (per-leave equity, 1 byte each) ----------------------
+// When a table is loaded it supplies the value for leaves of up to 6 tiles;
+// larger count vectors (the sim horizon evaluates full 7-tile racks) and the
+// no-table case fall back to the linear model in leaveValueFromCounts. The
+// index and codec mirror tools/superleave.js exactly.
+const SL_SUPPLY = [9, 2, 2, 4, 12, 2, 3, 2, 9, 1, 1, 4, 2, 6, 8, 2, 1, 6, 4, 6, 4, 2, 2, 1, 2, 1, 2];
+const SL_CAP = SL_SUPPLY.map(s => Math.min(6, s));
+const SL_G = (() => {
+  const g = Array.from({ length: 28 }, () => new Int32Array(7));
+  for (let r = 0; r <= 6; r++) g[27][r] = 1;
+  for (let i = 26; i >= 0; i--) {
+    for (let r = 0; r <= 6; r++) { let s = 0; for (let v = 0; v <= SL_CAP[i] && v <= r; v++) s += g[i + 1][r - v]; g[i][r] = s; }
+  }
+  return g;
+})();
+const SL_SCALE = 0.375, SL_ZERO = 128;
+// counts (by tile code, blank=26) -> table index, or -1 if the leave holds
+// more than 6 tiles (outside the table's domain).
+function leaveRank(counts) {
+  let idx = 0, R = 6;
+  for (let i = 0; i < 27; i++) {
+    const c = counts[i];
+    if (c > R) return -1;
+    for (let v = 0; v < c; v++) idx += SL_G[i + 1][R - v];
+    R -= c;
+  }
+  return idx;
+}
+let superTable = null; // Uint8Array of one equity byte per leave, or null
+function installSuperTable(t) { superTable = t; }
+
+// Fetch and inflate the gzipped superleave table (browser). Best-effort:
+// on any failure the engine simply keeps using the linear model.
+async function loadSuperTable() {
+  if (typeof DecompressionStream !== 'function' || typeof fetch !== 'function') return;
+  try {
+    const resp = await fetch('leaves.bin.gz');
+    if (!resp.ok) return;
+    const stream = resp.body.pipeThrough(new DecompressionStream('gzip'));
+    installSuperTable(new Uint8Array(await new Response(stream).arrayBuffer()));
+  } catch (e) { /* fall back to the linear model */ }
+}
+
 let leaveTables = null;
 
 function ensureLeaveTables() {
@@ -1500,6 +1544,10 @@ const LEAVE_PRESENT_SCRATCH = new Int32Array(27);
 
 // Value of the kept tiles given their counts by letter code.
 function leaveValueFromCounts(counts) {
+  if (superTable) {
+    const r = leaveRank(counts); // -1 for >6 tiles -> fall through to linear
+    if (r >= 0) return (superTable[r] - SL_ZERO) * SL_SCALE;
+  }
   const t = leaveTables;
   if (!t) return 0;
   const present = LEAVE_PRESENT_SCRATCH;
