@@ -8,7 +8,7 @@ A single-player word tile game played against the computer on a 15×15 board.
 - Standard tile distribution and letter values (100 tiles)
 - Single-player vs. computer — the computer always plays the highest-scoring valid move
 - Shuffle button to rearrange your rack
-- Open-source word list (ENABLE — public domain, ~173,000 words)
+- Open-source, public-domain word list
 
 ## How to Play
 
@@ -50,20 +50,9 @@ A single-player word tile game played against the computer on a 15×15 board.
 
 ## Word List
 
-The game uses the ENABLE word list, which is in the public domain
-(~173,000 words), plus a small house patch of common words ENABLE omits:
-
-- Two-letter words: QI, ZA, ZO, KI, OI, TE. Without them — QI especially —
-  the Q plays very differently than contemporary Scrabble.
-- More ways to unload the Q without a U: QIS, and QADI / QADIS (a variant
-  of the already-listed CADI / KADI).
-- Plurals of the patched two-letter words: ZAS, ZOS, KIS, OIS, TES, so an
-  S can hook them into a parallel play.
-- A high-value J word ENABLE omits: JUCO / JUCOS (a junior college), an
-  out for the 8-point J.
-
-These additions are our own editorial selection, in the same spirit as
-ENABLE itself — not a copy of any copyrighted tournament list.
+The game uses an open-source, public-domain word list, plus a small house
+patch of common modern words it omits. The additions are our own editorial
+selection — not a copy of any copyrighted tournament word list.
 
 ## Comparing Engine Versions
 
