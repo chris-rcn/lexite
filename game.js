@@ -138,13 +138,20 @@ async function init() {
     }
   });
 
+  // Build and paint the board and rack right away — neither depends on the
+  // word list, so don't make them wait on the ~1.7 MB download to appear.
+  // Player controls stay frozen until the dictionary is ready to validate
+  // moves; enablePlayerControls(false) also blocks cell/rack interaction.
+  newGame();
+  enablePlayerControls(false);
+
   try {
     await loadWordList();
   } catch (e) {
     showLoadError(e);
     return;
   }
-  newGame();
+  enablePlayerControls(true);
 }
 
 async function loadWordList() {
