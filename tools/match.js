@@ -35,6 +35,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const vm = require('vm');
+const zlib = require('zlib');
 const { execFile } = require('child_process');
 
 // Same tile distribution as game.js (kept local so old versions of the
@@ -112,7 +113,10 @@ function buildSeededBag(rng) {
 // ---------------------------------------------------------------
 
 function loadWords() {
-  const text = fs.readFileSync(path.join(path.resolve(__dirname, '..'), 'words.txt'), 'utf8');
+  // words.txt.gz is the single source of truth for the list; decompress it
+  // in-process (the browser does the same via DecompressionStream).
+  const gz = fs.readFileSync(path.join(path.resolve(__dirname, '..'), 'words.txt.gz'));
+  const text = zlib.gunzipSync(gz).toString('utf8');
   return text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2);
 }
 

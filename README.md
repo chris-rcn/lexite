@@ -54,10 +54,16 @@ The game uses an open-source, public-domain word list, plus a small house
 patch of common modern words it omits. The additions are our own editorial
 selection — not a copy of any copyrighted tournament word list.
 
-The browser loads a gzipped copy (`words.txt.gz`, ~4× smaller) and inflates
-it client-side, falling back to `words.txt` if needed. `words.txt` is the
-source of truth — after editing it, regenerate the gzip with
-`gzip -9 -k -f words.txt`.
+The list ships only gzipped (`words.txt.gz`, ~4× smaller than plain text).
+The browser inflates it client-side with `DecompressionStream`, and the
+Node tools decompress it with `zlib`. To edit the list, unzip it, change
+the words, and re-zip:
+
+```bash
+gzip -dk words.txt.gz            # -> words.txt
+# edit words.txt (keep it sorted: LC_ALL=C sort -u)
+gzip -9 -f words.txt && rm -f words.txt   # -> words.txt.gz
+```
 
 ## Comparing Engine Versions
 

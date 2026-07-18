@@ -162,26 +162,17 @@ async function loadWordList() {
   ensureTrie();
 }
 
-// Prefer the gzipped word list (~4x smaller: ~450 KB vs ~1.7 MB) and inflate
-// it in the browser. Fall back to the plain words.txt if the browser lacks
-// DecompressionStream or the .gz is missing, so the game still loads either
-// way. NOTE: words.txt.gz is generated from words.txt — regenerate it
-// (`gzip -9 -k -f words.txt`) whenever the word list changes.
+// The word list ships only gzipped (~450 KB vs ~1.7 MB uncompressed), so it
+// is inflated in the browser with DecompressionStream — supported by every
+// current browser (Chrome/Edge 80+, Firefox 113+, Safari 16.4+).
 async function fetchWordListText() {
-  if (typeof DecompressionStream === 'function') {
-    try {
-      const resp = await fetch('words.txt.gz');
-      if (resp.ok && resp.body) {
-        const stream = resp.body.pipeThrough(new DecompressionStream('gzip'));
-        return await new Response(stream).text();
-      }
-    } catch (e) {
-      // Corrupt/absent .gz or a decode error — fall back to the plain file.
-    }
+  if (typeof DecompressionStream !== 'function') {
+    throw new Error('this browser is too old (needs gzip DecompressionStream)');
   }
-  const resp = await fetch('words.txt');
+  const resp = await fetch('words.txt.gz');
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  return await resp.text();
+  const stream = resp.body.pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(stream).text();
 }
 
 function showLoadError(err) {
@@ -190,7 +181,7 @@ function showLoadError(err) {
   const msg = document.createElement('div');
   msg.id = 'load-error';
   msg.textContent =
-    'Could not load the word list (words.txt): ' + err.message + '. ' +
+    'Could not load the word list (words.txt.gz): ' + err.message + '. ' +
     'The game must be served over HTTP — run e.g. "python3 -m http.server 8080" ' +
     'in the game directory, then open http://localhost:8080 and reload.';
   container.appendChild(msg);
