@@ -2,11 +2,11 @@
 // Train the rack-leave model (leaves.js) and record its training data.
 //
 // Usage:
-//   node tools/train-leaves.js [--samples N] [--games G] [--seed S]
+//   node tools/train-leaves.js [--samples N] [--seed S]
 //                              [--jobs J] [--out leaves.js] [--data FILE]
 //                              [--fit-only | --record-only]
 //
-// Defaults: --samples 60000 --games 16 --jobs (cpus, max 4)
+// Defaults: --samples 60000 --jobs (cpus, max 4)
 //           --data data/leave-samples.jsonl
 //           --seed random (logged, and stored in the data file's meta
 //           line; pass --seed explicitly only to reproduce a past run)
@@ -22,15 +22,16 @@
 //   --record-only  sample and append more data without refitting
 // A normal run records new rows and then fits on the ENTIRE data file.
 //
-// Method: harvest board positions from seeded self-play, then for each
-// sample pick a random position, draw a random 7-tile rack from its
-// unseen pool — the first 0-6 tiles of the draw are the "leave" — and
-// measure the best next-move score a plain greedy engine achieves with
-// that rack. A ridge regression of score on leave features (per-letter
-// counts and all unordered letter-pair counts; same-letter pairs encode
-// duplicates, and synergies like QU emerge as pair weights) estimates
-// each kept tile's marginal contribution. The pipeline is seeded and
-// deterministic; sampling fans out over workers.
+// Method: play seeded greedy self-play and draw exactly ONE random 7-tile
+// rack per board reached (bag >= 8) — the first 0-6 tiles of the draw are
+// the "leave" — then measure the best next-move score a plain greedy
+// engine achieves with that rack. One sample per board means boards are
+// never oversampled, so each sample is a near-independent observation. A
+// ridge regression of score on leave features (per-letter counts and all
+// unordered letter-pair counts; same-letter pairs encode duplicates, and
+// synergies like QU emerge as pair weights) estimates each kept tile's
+// marginal contribution. The pipeline is seeded and deterministic; both
+// the self-play and the sampling fan out over workers on disjoint seeds.
 //
 // The evaluation engine is a copy of game.js placed in a directory with
 // no leaves.js, so training always measures the greedy engine, never an
@@ -126,27 +127,41 @@ function leaveFeatures(leave) {
 // ---------------------------------------------------------------
 
 async function runWorkerJob(spec) {
-  const positions = JSON.parse(fs.readFileSync(spec.positionsFile, 'utf8'));
   const engine = loadEngine(spec.engineFile, loadWords(), { staticOnly: true });
   const rng = mulberry32(spec.seed);
 
+  // No oversampling: play seeded greedy self-play and draw exactly ONE rack
+  // per harvested board, so a board is never reused across samples. Keep
+  // playing fresh games until this worker has produced its share of rows.
   const rows = [];
-  for (let s = 0; s < spec.count; s++) {
-    const pos = positions[Math.floor(rng() * positions.length)];
-    const pool = pos.bag.slice();
-    // Draw 7 random tiles (partial Fisher-Yates); the first `l` are the leave
-    for (let k = 0; k < 7; k++) {
-      const j = k + Math.floor(rng() * (pool.length - k));
-      [pool[k], pool[j]] = [pool[j], pool[k]];
+  let g = 0;
+  while (rows.length < spec.count) {
+    const positions = [];
+    const bag = buildSeededBag(mulberry32(spec.gameSeed + g));
+    g++;
+    await playGame([engine, engine], bag, false, '', (board, bagNow, isFirstMove) => {
+      // Need >= 8 unseen tiles: 7 to draw a rack and >= 1 left so the eval
+      // stays on the static path (bagCount >= 1), never the endgame search.
+      if (bagNow.length >= 8) {
+        positions.push({ board: JSON.parse(JSON.stringify(board)), bag: bagNow.slice(), isFirstMove });
+      }
+    });
+    for (const pos of positions) {
+      if (rows.length >= spec.count) break;
+      const pool = pos.bag.slice();
+      // Draw 7 random tiles (partial Fisher-Yates); the first `l` are the leave
+      for (let k = 0; k < 7; k++) {
+        const j = k + Math.floor(rng() * (pool.length - k));
+        [pool[k], pool[j]] = [pool[j], pool[k]];
+      }
+      const l = Math.floor(rng() * 7); // leave size 0..6
+      const leave = pool.slice(0, l).map(ch => ch.toUpperCase()).sort().join('');
+      const rack = pool.slice(0, 7).map(ch => ({ letter: ch, isBlank: ch === '?' }));
+      const move = await engine.bestMove(pos.board, rack, pos.isFirstMove, pos.bag.length - 7);
+      rows.push({ l: leave, y: move ? move.score : 0 });
     }
-    const l = Math.floor(rng() * 7); // leave size 0..6
-    const leave = pool.slice(0, l).map(ch => ch.toUpperCase()).sort().join('');
-    const rack = pool.slice(0, 7).map(ch => ({ letter: ch, isBlank: ch === '?' }));
-
-    const move = await engine.bestMove(pos.board, rack, pos.isFirstMove, pos.bag.length - 7);
-    rows.push({ l: leave, y: move ? move.score : 0 });
   }
-  process.stdout.write(JSON.stringify({ rows }));
+  process.stdout.write(JSON.stringify({ rows: rows.slice(0, spec.count) }));
 }
 
 // ---------------------------------------------------------------
@@ -270,40 +285,27 @@ async function main() {
   const engineFile = path.join(tmpDir, 'game.js');
   fs.copyFileSync(path.resolve(__dirname, '..', 'game.js'), engineFile);
 
-  // 1. Harvest positions from seeded greedy self-play
-  console.log(`Harvesting positions from ${opts.games} self-play games (seed ${opts.seed})...`);
-  const words = loadWords();
-  const engine = loadEngine(engineFile, words, { staticOnly: true });
-  const positions = [];
-  for (let g = 0; g < opts.games; g++) {
-    const bag = buildSeededBag(mulberry32(opts.seed + g));
-    await playGame([engine, engine], bag, false, '', (board, bagNow, isFirstMove) => {
-      // Need >= 7 unseen tiles to sample a rack; skip thin-bag endgames
-      if (bagNow.length >= 7) {
-        positions.push({
-          board: JSON.parse(JSON.stringify(board)),
-          bag: bagNow.slice(),
-          isFirstMove,
-        });
-      }
-    });
-  }
-  const positionsFile = path.join(tmpDir, 'positions.json');
-  fs.writeFileSync(positionsFile, JSON.stringify(positions));
-  console.log(`  ${positions.length} positions harvested (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-
-  // 2. Fan sampling out over workers
-  console.log(`Sampling ${opts.samples} leaves over ${opts.jobs} workers...`);
+  // Fan generation out over workers. Each worker plays its own seeded
+  // greedy self-play and draws ONE rack per harvested board, so the number
+  // of samples never exceeds the number of distinct boards seen — no board
+  // is oversampled. Distinct per-worker game seeds keep their games (and
+  // thus boards) disjoint.
+  console.log(`Sampling ${opts.samples} leaves over ${opts.jobs} workers ` +
+    `(one per board, no oversampling; seed ${opts.seed})...`);
   const specs = [];
   const per = Math.ceil(opts.samples / opts.jobs);
   for (let j = 0; j < opts.jobs; j++) {
     const count = Math.min(per, opts.samples - j * per);
     if (count <= 0) break;
-    specs.push({ positionsFile, engineFile, count, seed: opts.seed * 1000003 + j });
+    specs.push({
+      engineFile, count,
+      seed: opts.seed * 1000003 + j,
+      gameSeed: opts.seed * 7919 + j * 100003 + 1,
+    });
   }
   const partials = await Promise.all(specs.map(spec => new Promise((resolve, reject) => {
     execFile(process.execPath, [__filename, '--worker', JSON.stringify(spec)],
-      { maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
+      { maxBuffer: 256 * 1024 * 1024 }, (err, stdout) => {
         if (err) return reject(err);
         resolve(JSON.parse(stdout));
       });
@@ -312,7 +314,7 @@ async function main() {
 
   // 3. Record: append a provenance marker plus the raw rows
   fs.mkdirSync(path.dirname(opts.data), { recursive: true });
-  const runMeta = { meta: { seed: opts.seed, samples: newRows.length, games: opts.games } };
+  const runMeta = { meta: { seed: opts.seed, samples: newRows.length } };
   fs.appendFileSync(opts.data,
     JSON.stringify(runMeta) + '\n' + newRows.map(r => JSON.stringify(r)).join('\n') + '\n');
   console.log(`  Recorded ${newRows.length} samples to ${opts.data} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
