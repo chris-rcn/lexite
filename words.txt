@@ -121402,7 +121402,6 @@ qanats
 qat
 qats
 qi
-qin
 qindar
 qindarka
 qindars
