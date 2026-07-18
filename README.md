@@ -51,10 +51,17 @@ A single-player word tile game played against the computer on a 15×15 board.
 ## Word List
 
 The game uses the ENABLE word list, which is in the public domain
-(~173,000 words), plus a small house patch of two-letter words that
-modern Scrabble lists added after ENABLE was compiled: QI, ZA, ZO, KI,
-OI, TE. Without them — QI especially — the Q plays very differently
-than contemporary Scrabble.
+(~173,000 words), plus a small house patch of words that modern Scrabble
+lists added after ENABLE was compiled:
+
+- Two-letter words: QI, ZA, ZO, KI, OI, TE. Without them — QI especially —
+  the Q plays very differently than contemporary Scrabble.
+- Three-letter words: QIS, QIN (two more ways to unload the Q without a U),
+  and ZAS, ZOS, KIS, OIS, TES (the plurals of the patched two-letter words,
+  so an S can hook them into a parallel play).
+
+These additions are our own editorial selection, in the same spirit as
+ENABLE itself — not a copy of any copyrighted tournament list.
 
 ## Comparing Engine Versions
 

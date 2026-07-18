@@ -81272,6 +81272,7 @@ kirsches
 kirtle
 kirtled
 kirtles
+kis
 kishka
 kishkas
 kishke
@@ -101970,6 +101971,7 @@ oinomel
 oinomels
 ointment
 ointments
+ois
 oiticica
 oiticicas
 oka
@@ -121400,11 +121402,13 @@ qanats
 qat
 qats
 qi
+qin
 qindar
 qindarka
 qindars
 qintar
 qintars
+qis
 qiviut
 qiviuts
 qoph
@@ -153662,6 +153666,7 @@ tertians
 tertiaries
 tertiary
 tervalent
+tes
 tesla
 teslas
 tessellate
@@ -172376,6 +172381,7 @@ zariba
 zaribas
 zarzuela
 zarzuelas
+zas
 zastruga
 zastrugi
 zax
@@ -172763,6 +172769,7 @@ zorillo
 zorillos
 zorils
 zoris
+zos
 zoster
 zosters
 zouave
