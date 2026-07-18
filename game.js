@@ -633,6 +633,13 @@ function logEntry(msg, cls) {
   log.prepend(div);
 }
 
+// Sorted letters of the player's exchanged tiles for the move log (a blank
+// is shown as ?). Only ever used for the player's own tiles — the
+// computer's exchanged tiles stay hidden as a count.
+function exchangedLetters(tiles) {
+  return tiles.map(t => (t.isBlank ? '?' : t.letter.toUpperCase())).sort().join('');
+}
+
 let errorToastTimer = null;
 
 function showMoveError(msg) {
@@ -795,8 +802,7 @@ function confirmExchange() {
   exitExchangeMode();
   executeExchange(state.playerRack, tiles);
   state.consecutivePasses++;
-  const k = tiles.length;
-  logEntry(`You: exchanged ${k} tile${k > 1 ? 's' : ''}`, 'player');
+  logEntry(`You: exchanged ${exchangedLetters(tiles)}`, 'player');
   renderRack();
   updateBagCount();
   if (checkGameOver()) return;
@@ -1232,8 +1238,7 @@ async function lifelineTurn() {
   } else if (move.exchange) {
     executeExchange(state.playerRack, move.tiles);
     state.consecutivePasses++;
-    const k = move.tiles.length;
-    logEntry(`You: exchanged ${k} tile${k > 1 ? 's' : ''} in ${ms}ms [lifeline]`, 'player');
+    logEntry(`You: exchanged ${exchangedLetters(move.tiles)} in ${ms}ms [lifeline]`, 'player');
     renderRack();
     updateBagCount();
     if (checkGameOver()) return;
