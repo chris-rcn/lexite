@@ -121395,6 +121395,8 @@ pyxidium
 pyxie
 pyxies
 pyxis
+qadi
+qadis
 qaid
 qaids
 qanat
