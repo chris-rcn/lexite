@@ -300,6 +300,72 @@ function train(opts) {
 // small helper: leave string -> a length-27 Uint8Array counts buffer at base 0
 function strC(s) { const a = new Uint8Array(NT); for (const ch of s) a[ch === '?' ? 26 : ch.charCodeAt(0) - 65]++; return a; }
 
+// TRUE online learning: play self-play games while updating the leave-value
+// weights after every move, with the move-search policy reading those same
+// (live) weights via the engine's leave hook. Weights start at ZERO -- no
+// linear seed, no loaded table. Each transition is consumed exactly once,
+// as it is generated; there is no dataset and no epochs.
+async function onlineLearn(opts) {
+  const engine = loadEngine(path.resolve(__dirname, '..') + '/game.js', loadWords(), { staticOnly: true });
+  // Inject the feature model + a sandbox-resident weight vector INTO the
+  // engine's realm, and install an in-realm leave-value function as the hook.
+  // The move search then evaluates leaves with the live weights without ever
+  // crossing the vm membrane; only the TD update (once per transition) does.
+  engine.evalInRealm(`(function(){
+    const NT = 27, SIZE = ${SIZE}, MAXORD = ${opts.maxorder};
+    const BINOM = []; for (let n=0;n<=6;n++){BINOM[n]=[];for(let k=0;k<=6;k++)BINOM[n][k]=k>n?0:(k===0?1:BINOM[n-1][k-1]+BINOM[n-1][k]);}
+    const __W = new Float64Array(SIZE), _sub = new Int32Array(NT);
+    function each(counts, cb){
+      const present=[]; for(let i=0;i<NT;i++) if(counts[i]>0){present.push(i);_sub[i]=0;}
+      (function rec(pi,size,mult){
+        if(pi===present.length){ if(size>=1) cb(leaveRank(_sub), mult); return; }
+        const t=present[pi], c=counts[t], maxS=Math.min(c, MAXORD-size);
+        for(let s=0;s<=maxS;s++){ _sub[t]=s; rec(pi+1,size+s,mult*BINOM[c][s]); }
+        _sub[t]=0;
+      })(0,0,1);
+    }
+    const lcBuf=new Int32Array(NT), rcBuf=new Int32Array(NT);
+    const fill=(buf,s)=>{ buf.fill(0); for(const ch of s) buf[ch==='?'?26:ch.charCodeAt(0)-65]++; };
+    // in-realm leave value used by the move search (no membrane crossing)
+    installLeaveHook((counts)=>{ let v=0; each(counts,(rank,mult)=>{v+=mult*__W[rank];}); return v; });
+    const rankBuf=new Int32Array(64), multBuf=new Float64Array(64);
+    // one TD update per transition; l,r are leave strings
+    globalThis.__tdUpdate=(lStr,points,rStr,b,lr,gamma)=>{
+      fill(rcBuf,rStr); let Vr=0; each(rcBuf,(rank,mult)=>{Vr+=mult*__W[rank];});
+      fill(lcBuf,lStr); let m=0,V=0,norm=0;
+      each(lcBuf,(rank,mult)=>{rankBuf[m]=rank;multBuf[m]=mult;V+=mult*__W[rank];norm+=mult*mult;m++;});
+      const step=lr*((points-b)+gamma*Vr-V)/(norm+1);
+      for(let j=0;j<m;j++) __W[rankBuf[j]]+=step*multBuf[j];
+    };
+    globalThis.__spotValue=(s)=>{ fill(lcBuf,s); let v=0; each(lcBuf,(rank,mult)=>{v+=mult*__W[rank];}); return v; };
+  })();`);
+  const sb = engine._sandbox;
+  const lr = opts.lr, gamma = opts.gamma, betaB = opts.betaB;
+  let b = 0, nTrans = 0, nGames = 0;                 // b = running average move points (baseline)
+  const prev = ['', ''];
+  const spot = () => ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'].map(s => `${s}=${sb.__spotValue(s).toFixed(2)}`).join(' ');
+  const onTurn = (seat, type, points, leftover) => {
+    if (type !== 'play') { prev[seat] = undefined; return; }
+    const r = sortLeave(leftover);
+    if (prev[seat] !== undefined) {                 // TD update on l = prev[seat] (leave held at turn start)
+      sb.__tdUpdate(prev[seat], points, r, b, lr, gamma);
+      b += betaB * (points - b);
+      nTrans++;
+    }
+    prev[seat] = r;
+  };
+  const t0 = Date.now();
+  console.log(`online learning from ZERO weights (in-realm): lr=${lr} gamma=${gamma} order=${opts.maxorder}`);
+  while (nGames < opts.games) {
+    const bag = buildSeededBag(mulberry32(opts.seed * 7919 + nGames + 1));
+    prev[0] = ''; prev[1] = '';
+    await playGame([engine, engine], bag, false, '', null, onTurn);
+    nGames++;
+    if (nGames % opts.logEvery === 0)
+      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)} | ${((Date.now() - t0) / 1000).toFixed(0)}s | b=${b.toFixed(1)} | ${spot()}`);
+  }
+}
+
 function main() {
   const cmd = process.argv[2];
   const arg = (f, d) => { const i = process.argv.indexOf(f); return i === -1 ? d : process.argv[i + 1]; };
@@ -328,7 +394,17 @@ function main() {
     dumpw: (process.argv.indexOf('--dumpw') !== -1) ? path.resolve(process.cwd(), arg('--dumpw', 'weights.txt')) : null,
     out: path.resolve(process.cwd(), arg('--out', 'leaves.bin.gz')),
   });
-  console.error('usage: selftest | record | train'); process.exit(2);
+  if (cmd === 'online-learn') return onlineLearn({
+    games: parseInt(arg('--games', '20000'), 10),
+    lr: parseFloat(arg('--lr', '0.05')),
+    gamma: parseFloat(arg('--gamma', '1.0')),
+    maxorder: parseInt(arg('--maxorder', '6'), 10),
+    betaB: parseFloat(arg('--betaB', '0.02')),
+    seed: parseInt(arg('--seed', '90000'), 10),
+    logEvery: parseInt(arg('--log-every', '200'), 10),
+    out: (process.argv.indexOf('--out') !== -1) ? path.resolve(process.cwd(), arg('--out', 'leaves.bin.gz')) : null,
+  });
+  console.error('usage: selftest | record | train | online-learn'); process.exit(2);
 }
 
 if (require.main === module) main();

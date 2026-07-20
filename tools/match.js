@@ -184,6 +184,17 @@ function loadEngine(file, words, opts = {}) {
   return {
     file,
     stats: { moves: 0, ms: 0 },
+    // Install a live leave-value function into the engine's realm so the
+    // move search uses it (online learning). fn(counts) -> value.
+    installLeaveHook(fn) {
+      sandbox.__leaveHook = fn;
+      vm.runInContext('if (typeof installLeaveHook === "function") installLeaveHook(__leaveHook);', sandbox);
+    },
+    // Run code inside the engine's realm (for injecting an in-realm value
+    // function + weights, so online-learning leaf-evals never cross the
+    // vm membrane). Returns whatever the code evaluates to.
+    evalInRealm(code) { return vm.runInContext(code, sandbox); },
+    _sandbox: sandbox,
     async bestMove(board, rack, isFirstMove, bagCount) {
       const positionJson = JSON.stringify({
         board,

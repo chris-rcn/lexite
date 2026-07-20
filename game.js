@@ -1504,6 +1504,12 @@ function leaveRank(counts) {
 let superTable = null; // Uint8Array of one equity byte per leave, or null
 function installSuperTable(t) { superTable = t; }
 
+// Headless-only override: an online-learning driver can install a live
+// leave-value function so the move-search policy uses the weights it is
+// currently learning. null in the browser/production build (no effect).
+let leaveHook = null;
+function installLeaveHook(f) { leaveHook = f; }
+
 // Fetch and inflate the gzipped superleave table (browser). Best-effort:
 // on any failure the engine simply keeps using the linear model.
 async function loadSuperTable() {
@@ -1544,6 +1550,7 @@ const LEAVE_PRESENT_SCRATCH = new Int32Array(27);
 
 // Value of the kept tiles given their counts by letter code.
 function leaveValueFromCounts(counts) {
+  if (leaveHook) return leaveHook(counts);
   if (superTable) {
     const r = leaveRank(counts); // -1 for >6 tiles -> fall through to linear
     if (r >= 0) return (superTable[r] - SL_ZERO) * SL_SCALE;
