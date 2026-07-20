@@ -340,10 +340,24 @@ async function onlineLearn(opts) {
     globalThis.__spotValue=(s)=>{ fill(lcBuf,s); let v=0; each(lcBuf,(rank,mult)=>{v+=mult*__W[rank];}); return v; };
     // weight-magnitude health: avg |w| over touched features, plus max (divergence canary)
     globalThis.__wStats=()=>{ let s=0,n=0,mx=0; for(let i=0;i<SIZE;i++){ const a=__W[i]<0?-__W[i]:__W[i]; if(a>0){ s+=a; n++; if(a>mx)mx=a; } } return { avg:n?s/n:0, nz:n, max:mx }; };
+    // checkpoint: export/import the (sparse) nonzero weights as a compact string
+    globalThis.__exportW=()=>{ let out=''; for(let i=0;i<SIZE;i++){ if(__W[i]!==0){ out += (out?',':'') + i + ':' + __W[i]; } } return out; };
+    globalThis.__importW=(s)=>{ if(!s) return; for(const part of s.split(',')){ const c=part.indexOf(':'); __W[+part.slice(0,c)] = +part.slice(c+1); } };
   })();`);
   const sb = engine._sandbox;
   const lr = opts.lr, gamma = opts.gamma, betaB = opts.betaB;
   let b = 0, nTrans = 0, nGames = 0;                 // b = running average move points (baseline)
+  // resume from a checkpoint if one exists (survives container restarts)
+  if (opts.ckpt && fs.existsSync(opts.ckpt)) {
+    const st = JSON.parse(fs.readFileSync(opts.ckpt, 'utf8'));
+    sb.__importW(st.w); b = st.b; nGames = st.games; nTrans = st.trans;
+    console.log(`resumed from ${opts.ckpt}: games ${nGames}, trans ${nTrans}, b=${b.toFixed(1)}`);
+  }
+  const saveCkpt = () => {                            // atomic write (tmp + rename)
+    if (!opts.ckpt) return;
+    fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, b, w: sb.__exportW() }));
+    fs.renameSync(opts.ckpt + '.tmp', opts.ckpt);
+  };
   const prev = ['', ''];
   const spot = () => ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'].map(s => `${s}=${sb.__spotValue(s).toFixed(2)}`).join(' ');
   const onTurn = (seat, type, points, leftover) => {
@@ -367,7 +381,10 @@ async function onlineLearn(opts) {
       const st = sb.__wStats();
       console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)} | ${((Date.now() - t0) / 1000).toFixed(0)}s | b=${b.toFixed(1)} | avg|w|=${st.avg.toFixed(3)} nz=${st.nz} max=${st.max.toFixed(1)} | ${spot()}`);
     }
+    if (nGames % opts.saveEvery === 0) saveCkpt();
   }
+  saveCkpt();
+  console.log(`done: ${nGames} games, ${nTrans} transitions`);
 }
 
 function main() {
@@ -406,7 +423,8 @@ function main() {
     betaB: parseFloat(arg('--betaB', '0.02')),
     seed: parseInt(arg('--seed', '90000'), 10),
     logEvery: parseInt(arg('--log-every', '200'), 10),
-    out: (process.argv.indexOf('--out') !== -1) ? path.resolve(process.cwd(), arg('--out', 'leaves.bin.gz')) : null,
+    saveEvery: parseInt(arg('--save-every', '100'), 10),
+    ckpt: (process.argv.indexOf('--ckpt') !== -1) ? path.resolve(process.cwd(), arg('--ckpt', 'online.ckpt.json')) : null,
   });
   console.error('usage: selftest | record | train | online-learn'); process.exit(2);
 }
