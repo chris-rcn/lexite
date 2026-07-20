@@ -421,7 +421,9 @@ function main() {
     gamma: parseFloat(arg('--gamma', '1.0')),
     maxorder: parseInt(arg('--maxorder', '6'), 10),
     betaB: parseFloat(arg('--betaB', '0.02')),
-    seed: parseInt(arg('--seed', '90000'), 10),
+    // default to a non-deterministic seed (time + pid, so concurrent launches
+    // differ); pass --seed explicitly to reproduce or to compare across LRs.
+    seed: parseInt(arg('--seed', String(((Date.now() ^ (process.pid * 2654435761)) >>> 0) % 2000000000)), 10),
     logEvery: parseInt(arg('--log-every', '200'), 10),
     saveEvery: parseInt(arg('--save-every', '100'), 10),
     ckpt: (process.argv.indexOf('--ckpt') !== -1) ? path.resolve(process.cwd(), arg('--ckpt', 'online.ckpt.json')) : null,
