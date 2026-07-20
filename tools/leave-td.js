@@ -241,10 +241,21 @@ function train(opts) {
     return v;
   };
 
+  // online: bootstrap off the live weights (plain TD(0)); otherwise off a
+  // per-epoch frozen target network. For a linear-in-features model on
+  // on-policy data, online TD(0) converges (Tsitsiklis-Van Roy) and avoids
+  // the moving-snapshot drift.
+  const online = opts.online;
+  // Polyak-Ruppert averaging: online TD(0) rattles around the fixed point;
+  // averaging the weight iterates over the tail cancels that zero-mean noise.
+  // avgtail = fraction of final epochs to average (0 = disabled, use last w).
+  const avgtail = opts.avgtail;
+  const avgStart = avgtail > 0 ? Math.floor(opts.epochs * (1 - avgtail)) : opts.epochs;
+  const wAvg = new Float64Array(SIZE); let avgN = 0;
   for (let ep = 0; ep < opts.epochs; ep++) {
     let sse = 0;
     for (let i = 0; i < n; i++) {
-      const vr = evalCounts(rC, i * NT, wSnap);       // snapshot value of next leave
+      const vr = evalCounts(rC, i * NT, online ? w : wSnap); // value of next leave
       const m = collect(lC, i * NT);                  // l's features -> rankBuf/multBuf
       let v = 0, norm = 0;
       for (let j = 0; j < m; j++) { v += multBuf[j] * w[rankBuf[j]]; norm += multBuf[j] * multBuf[j]; }
@@ -253,13 +264,23 @@ function train(opts) {
       const step = lr * err / (norm + 1);             // NLMS: bounded move toward target
       for (let j = 0; j < m; j++) w[rankBuf[j]] += step * multBuf[j] - lr * l2 * penBuf[j] * w[rankBuf[j]];
     }
-    wSnap = w.slice();                                // refresh target network each epoch
+    if (!online) wSnap = w.slice();                   // refresh target network each epoch
+    if (ep >= avgStart) { for (let k = 0; k < SIZE; k++) wAvg[k] += w[k]; avgN++; }
     const sp = ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'];
     const spot = sp.map(s => `${s}=${evalCounts(strC(s), 0, w).toFixed(2)}`).join(' ');
     console.log(`  epoch ${ep + 1}: rmse ${Math.sqrt(sse / n).toFixed(2)}  | ${spot}`);
   }
 
-  const table = buildTable(w);
+  // final weights: Polyak average over the tail, or the last iterate
+  let wFinal = w;
+  if (avgN > 0) {
+    for (let k = 0; k < SIZE; k++) wAvg[k] /= avgN;
+    wFinal = wAvg;
+    const sp = ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'];
+    const spot = sp.map(s => `${s}=${evalCounts(strC(s), 0, wFinal).toFixed(2)}`).join(' ');
+    console.log(`  averaged over last ${avgN} epochs | ${spot}`);
+  }
+  const table = buildTable(wFinal);
   const gz = zlib.gzipSync(Buffer.from(table.buffer), { level: 9 });
   fs.writeFileSync(opts.out, gz);
   console.log(`Wrote ${opts.out} (${(gz.length / 1024).toFixed(0)} KB gzip)`);
@@ -290,6 +311,8 @@ function main() {
     penexp: parseFloat(arg('--penexp', '1')),
     maxorder: parseInt(arg('--maxorder', '3'), 10),
     gamma: parseFloat(arg('--gamma', '1.0')),
+    online: process.argv.includes('--online'),
+    avgtail: parseFloat(arg('--avgtail', '0')),
     out: path.resolve(process.cwd(), arg('--out', 'leaves.bin.gz')),
   });
   console.error('usage: selftest | record | train'); process.exit(2);
