@@ -2119,8 +2119,8 @@ async function findBestSimMove(rack) {
         }
         const oppRack = world.slice(0, oppSize);
         let cursor = oppSize;
+        const myDrawStart = cursor;
         const myDraw = Math.min(7 - myKept.length, world.length - cursor);
-        const myNew = myKept.concat(world.slice(cursor, cursor + myDraw));
         cursor += myDraw;
 
         // Opponent answers on the post-move board; only the simulated
@@ -2132,14 +2132,23 @@ async function findBestSimMove(rack) {
         const reply = await findBestMove(oppRack);
         const rScore = reply ? reply.score : 0;
         const oppKept = reply ? rackWithout(oppRack, reply.placements) : oppRack;
+        const oppDrawStart = cursor;
         const oppDraw = Math.min(7 - oppKept.length, state.bag.length);
-        const oppNew = oppKept.concat(world.slice(cursor, cursor + oppDraw));
 
         let horizon = 0;
         const scaleH = Math.min(1, (state.bag.length - oppDraw) / 7);
         if (scaleH > 0 && leaveTables) {
+          // Fill the leaf eval rack to 6 tiles while the bag is comfortable
+          // (>10) so it stays inside the superleave table's <=6 domain;
+          // fill completely (7) near the bag end, where the realized rack
+          // matters and the table falls back to the linear model anyway.
+          const target = realBag.length > 10 ? 6 : 7;
+          const specMy = Math.min(myDraw, Math.max(0, target - myKept.length));
+          const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));
+          const myEval = myKept.concat(world.slice(myDrawStart, myDrawStart + specMy));
+          const oppEval = oppKept.concat(world.slice(oppDrawStart, oppDrawStart + specOpp));
           horizon = scaleH *
-            (leaveValueFromCounts(tileCounts(myNew)) - leaveValueFromCounts(tileCounts(oppNew)));
+            (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
         }
         vals[ci].push(arm.score - rScore + horizon);
         if (arm.placements) removeFromBoard(arm.placements);
