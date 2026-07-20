@@ -338,6 +338,8 @@ async function onlineLearn(opts) {
       for(let j=0;j<m;j++) __W[rankBuf[j]]+=step*multBuf[j];
     };
     globalThis.__spotValue=(s)=>{ fill(lcBuf,s); let v=0; each(lcBuf,(rank,mult)=>{v+=mult*__W[rank];}); return v; };
+    // weight-magnitude health: avg |w| over touched features, plus max (divergence canary)
+    globalThis.__wStats=()=>{ let s=0,n=0,mx=0; for(let i=0;i<SIZE;i++){ const a=__W[i]<0?-__W[i]:__W[i]; if(a>0){ s+=a; n++; if(a>mx)mx=a; } } return { avg:n?s/n:0, nz:n, max:mx }; };
   })();`);
   const sb = engine._sandbox;
   const lr = opts.lr, gamma = opts.gamma, betaB = opts.betaB;
@@ -361,8 +363,10 @@ async function onlineLearn(opts) {
     prev[0] = ''; prev[1] = '';
     await playGame([engine, engine], bag, false, '', null, onTurn);
     nGames++;
-    if (nGames % opts.logEvery === 0)
-      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)} | ${((Date.now() - t0) / 1000).toFixed(0)}s | b=${b.toFixed(1)} | ${spot()}`);
+    if (nGames % opts.logEvery === 0) {
+      const st = sb.__wStats();
+      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)} | ${((Date.now() - t0) / 1000).toFixed(0)}s | b=${b.toFixed(1)} | avg|w|=${st.avg.toFixed(3)} nz=${st.nz} max=${st.max.toFixed(1)} | ${spot()}`);
+    }
   }
 }
 
