@@ -45,16 +45,18 @@ for (let n = 0; n <= 6; n++) {
 
 // Enumerate every non-empty sub-multiset S of `counts` (|S| in 1..6),
 // calling cb(rankS, multS) where multS = prod_i C(counts_i, S_i).
+let MAXORD = 6; // cap on feature order (sub-multiset size); set by train
+function setMaxOrder(k) { MAXORD = k; }
 const _sub = new Int32Array(NT);
 function eachSubFeature(counts, cb) {
   const present = [];
   for (let i = 0; i < NT; i++) if (counts[i] > 0) { present.push(i); _sub[i] = 0; }
   (function rec(pi, size, mult) {
     if (pi === present.length) {
-      if (size >= 1) cb(SL.leaveRank(_sub), mult);
+      if (size >= 1) cb(SL.leaveRank(_sub), mult, size);
       return;
     }
-    const t = present[pi], c = counts[t], maxS = Math.min(c, 6 - size);
+    const t = present[pi], c = counts[t], maxS = Math.min(c, MAXORD - size);
     for (let s = 0; s <= maxS; s++) {
       _sub[t] = s;
       rec(pi + 1, size + s, mult * BINOM[c][s]);
@@ -179,6 +181,7 @@ async function record(opts) {
 
 // ---- train: TD SGD over hierarchical features with a target-network -------
 function train(opts) {
+  setMaxOrder(opts.maxorder);
   // load transitions into flat count arrays
   const text = fs.readFileSync(opts.data, 'utf8');
   const lines = text.split('\n').filter(Boolean);
@@ -196,13 +199,16 @@ function train(opts) {
   const w = new Float64Array(SIZE);        // features, init 0
   let wSnap = new Float64Array(SIZE);      // target network (frozen), init 0
   const lr = opts.lr, l2 = opts.l2, gamma = opts.gamma;
+  // per-order L2 multiplier: penalize high-order features exponentially more
+  // so main effects concentrate in low orders (functional-ANOVA prior).
+  const ORDPEN = [0, 1, 1, 1, 1, 1, 1].map((_, k) => Math.pow(opts.penexp, Math.max(0, k - 1)));
   const cnt = new Int32Array(NT);
   // collect a leave's active features into reusable buffers; return count
-  const rankBuf = new Int32Array(64), multBuf = new Float64Array(64);
+  const rankBuf = new Int32Array(64), multBuf = new Float64Array(64), penBuf = new Float64Array(64);
   const collect = (arr, base) => {
     for (let k = 0; k < NT; k++) cnt[k] = arr[base + k];
     let m = 0;
-    eachSubFeature(cnt, (rank, mult) => { rankBuf[m] = rank; multBuf[m] = mult; m++; });
+    eachSubFeature(cnt, (rank, mult, size) => { rankBuf[m] = rank; multBuf[m] = mult; penBuf[m] = ORDPEN[size]; m++; });
     return m;
   };
   const evalCounts = (arr, base, ww) => {
@@ -221,7 +227,7 @@ function train(opts) {
       const target = (pArr[i] - baseline) + gamma * vr;
       const err = target - v; sse += err * err;
       const step = lr * err / (norm + 1);             // NLMS: bounded move toward target
-      for (let j = 0; j < m; j++) w[rankBuf[j]] += step * multBuf[j] - lr * l2 * w[rankBuf[j]];
+      for (let j = 0; j < m; j++) w[rankBuf[j]] += step * multBuf[j] - lr * l2 * penBuf[j] * w[rankBuf[j]];
     }
     wSnap = w.slice();                                // refresh target network each epoch
     const sp = ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'];
@@ -253,6 +259,8 @@ function main() {
     epochs: parseInt(arg('--epochs', '20'), 10),
     lr: parseFloat(arg('--lr', '0.5')),
     l2: parseFloat(arg('--l2', '0.002')),
+    penexp: parseFloat(arg('--penexp', '1')),
+    maxorder: parseInt(arg('--maxorder', '3'), 10),
     gamma: parseFloat(arg('--gamma', '1.0')),
     out: path.resolve(process.cwd(), arg('--out', 'leaves.bin.gz')),
   });
