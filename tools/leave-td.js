@@ -228,13 +228,15 @@ function train(opts) {
   const ORDPEN = [0, 1, 1, 1, 1, 1, 1].map((_, k) => Math.pow(opts.penexp, Math.max(0, k - 1)));
   const cnt = new Int32Array(NT);
   // collect a leave's active features into reusable buffers; return count
-  const rankBuf = new Int32Array(64), multBuf = new Float64Array(64), penBuf = new Float64Array(64);
+  const rankBuf = new Int32Array(64), multBuf = new Float64Array(64), penBuf = new Float64Array(64), sizeBuf = new Uint8Array(64);
   const collect = (arr, base) => {
     for (let k = 0; k < NT; k++) cnt[k] = arr[base + k];
     let m = 0;
-    eachSubFeature(cnt, (rank, mult, size) => { rankBuf[m] = rank; multBuf[m] = mult; penBuf[m] = ORDPEN[size]; m++; });
+    eachSubFeature(cnt, (rank, mult, size) => { rankBuf[m] = rank; multBuf[m] = mult; penBuf[m] = ORDPEN[size]; sizeBuf[m] = size; m++; });
     return m;
   };
+  // per-feature diagnostics: how many times each feature is updated, and its order
+  const nSeen = new Int32Array(SIZE), ordOf = new Uint8Array(SIZE);
   const evalCounts = (arr, base, ww) => {
     const m = collect(arr, base);
     let v = 0; for (let j = 0; j < m; j++) v += multBuf[j] * ww[rankBuf[j]];
@@ -262,7 +264,10 @@ function train(opts) {
       const target = (pArr[i] - baseline) + gamma * vr;
       const err = target - v; sse += err * err;
       const step = lr * err / (norm + 1);             // NLMS: bounded move toward target
-      for (let j = 0; j < m; j++) w[rankBuf[j]] += step * multBuf[j] - lr * l2 * penBuf[j] * w[rankBuf[j]];
+      for (let j = 0; j < m; j++) {
+        w[rankBuf[j]] += step * multBuf[j] - lr * l2 * penBuf[j] * w[rankBuf[j]];
+        if (ep === 0) { nSeen[rankBuf[j]]++; ordOf[rankBuf[j]] = sizeBuf[j]; }
+      }
     }
     if (!online) wSnap = w.slice();                   // refresh target network each epoch
     if (ep >= avgStart) { for (let k = 0; k < SIZE; k++) wAvg[k] += w[k]; avgN++; }
@@ -279,6 +284,13 @@ function train(opts) {
     const sp = ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'];
     const spot = sp.map(s => `${s}=${evalCounts(strC(s), 0, wFinal).toFixed(2)}`).join(' ');
     console.log(`  averaged over last ${avgN} epochs | ${spot}`);
+  }
+  // optional: dump raw FEATURE weights with order + sample count for diagnostics
+  if (opts.dumpw) {
+    const out = [];
+    for (let r = 0; r < SIZE; r++) if (nSeen[r] > 0) out.push(`${ordOf[r]} ${nSeen[r]} ${wFinal[r].toFixed(5)}`);
+    fs.writeFileSync(opts.dumpw, out.join('\n') + '\n');
+    console.log(`Dumped ${out.length} feature weights to ${opts.dumpw}`);
   }
   const table = buildTable(wFinal);
   const gz = zlib.gzipSync(Buffer.from(table.buffer), { level: 9 });
@@ -313,6 +325,7 @@ function main() {
     gamma: parseFloat(arg('--gamma', '1.0')),
     online: process.argv.includes('--online'),
     avgtail: parseFloat(arg('--avgtail', '0')),
+    dumpw: (process.argv.indexOf('--dumpw') !== -1) ? path.resolve(process.cwd(), arg('--dumpw', 'weights.txt')) : null,
     out: path.resolve(process.cwd(), arg('--out', 'leaves.bin.gz')),
   });
   console.error('usage: selftest | record | train'); process.exit(2);
