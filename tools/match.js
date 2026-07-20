@@ -212,7 +212,7 @@ function rackValue(rack) {
 // onPosition, if given, is called with (board, bag, isFirstMove) before
 // every engine move — used by tools/train-leaves.js to harvest positions.
 // Returns { scores: [seat0, seat1], moves, reason }
-async function playGame(engines, initialBag, verbose, label, onPosition) {
+async function playGame(engines, initialBag, verbose, label, onPosition, onTurn) {
   const bag = initialBag.slice();
   const board = Array.from({ length: 15 }, () => new Array(15).fill(null));
   const racks = [[], []];
@@ -236,6 +236,7 @@ async function playGame(engines, initialBag, verbose, label, onPosition) {
     const move = await engines[seat].bestMove(board, racks[seat], isFirstMove, bag.length);
     moves++;
     if (!move) {
+      if (onTurn) onTurn(seat, 'pass', 0, null);
       if (verbose) console.log(`  [${label}] seat${seat}: pass`);
       if (++scoreless >= 6) { reason = 'passes'; break; }
     } else if (move.exchange) {
@@ -252,6 +253,7 @@ async function playGame(engines, initialBag, verbose, label, onPosition) {
       // without an RNG, and they cannot be immediately redrawn — the
       // practical effect of a shuffle at these bag depths.
       for (const t of removed) bag.unshift(t.isBlank ? '?' : t.letter);
+      if (onTurn) onTurn(seat, 'exchange', 0, null);
       if (verbose) console.log(`  [${label}] seat${seat}: exchanged ${removed.length}`);
       if (++scoreless >= 6) { reason = 'passes'; break; }
     } else {
@@ -266,6 +268,7 @@ async function playGame(engines, initialBag, verbose, label, onPosition) {
       }
       scores[seat] += move.score;
       isFirstMove = false;
+      if (onTurn) onTurn(seat, 'play', move.score, racks[seat].slice()); // leftover leave, pre-draw
       if (verbose) console.log(`  [${label}] seat${seat}: ${move.word.toUpperCase()} +${move.score} (total ${scores[seat]})`);
       draw(seat);
       if (bag.length === 0 && racks[seat].length === 0) { reason = 'out'; break; }

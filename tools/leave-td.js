@@ -162,13 +162,37 @@ async function recordWorker(spec) {
   process.stdout.write(JSON.stringify({ rows: rows.slice(0, spec.count) }));
 }
 
+// Trajectory recorder: chain each seat's leaves across a real self-play game
+// (the on-policy stationary distribution) — required for the gamma=1 average-
+// reward TD to be well-posed. prev[seat] is last turn's leftover leave ('' at
+// game start); an exchange/pass breaks the chain.
+async function recordTrajWorker(spec) {
+  const engine = loadEngine(spec.engineFile, loadWords(), { staticOnly: true });
+  const rows = [];
+  let g = 0;
+  while (rows.length < spec.count) {
+    const bag = buildSeededBag(mulberry32(spec.gameSeed + g)); g++;
+    const prev = ['', ''];
+    await playGame([engine, engine], bag, false, '', null, (seat, type, points, leftover) => {
+      if (type === 'play') {
+        const r = sortLeave(leftover);
+        if (prev[seat] !== undefined) rows.push({ l: prev[seat], p: points, r });
+        prev[seat] = r;
+      } else {
+        prev[seat] = undefined; // exchange/pass: break the chain
+      }
+    });
+  }
+  process.stdout.write(JSON.stringify({ rows: rows.slice(0, spec.count) }));
+}
+
 async function record(opts) {
   const repo = path.resolve(__dirname, '..');
   const engineFile = repo + '/game.js'; // leave-aware (leaves.js + leaves.bin.gz beside it)
   const per = Math.ceil(opts.samples / opts.jobs), specs = [];
   for (let j = 0; j < opts.jobs; j++) {
     const count = Math.min(per, opts.samples - j * per); if (count <= 0) break;
-    specs.push({ engineFile, count, reuse: 8, seed: opts.seed * 1000003 + j, gameSeed: opts.seed * 7919 + j * 100003 + 1 });
+    specs.push({ engineFile, count, reuse: 8, traj: opts.traj, seed: opts.seed * 1000003 + j, gameSeed: opts.seed * 7919 + j * 100003 + 1 });
   }
   const t0 = Date.now();
   const parts = await Promise.all(specs.map(spec => new Promise((res, rej) =>
@@ -247,8 +271,12 @@ function main() {
   const cmd = process.argv[2];
   const arg = (f, d) => { const i = process.argv.indexOf(f); return i === -1 ? d : process.argv[i + 1]; };
   if (cmd === 'selftest') return selftest();
-  if (process.argv.includes('--worker')) return recordWorker(JSON.parse(process.argv[process.argv.indexOf('--worker') + 1]));
-  if (cmd === 'record') return record({
+  if (process.argv.includes('--worker')) {
+    const spec = JSON.parse(process.argv[process.argv.indexOf('--worker') + 1]);
+    return spec.traj ? recordTrajWorker(spec) : recordWorker(spec);
+  }
+  if (cmd === 'record' || cmd === 'record-traj') return record({
+    traj: cmd === 'record-traj',
     samples: parseInt(arg('--samples', '100000'), 10),
     jobs: parseInt(arg('--jobs', String(Math.min(4, os.cpus().length - 1))), 10),
     seed: parseInt(arg('--seed', String(1 + Math.floor(1e6 * (Date.now() % 997) / 997))), 10),
