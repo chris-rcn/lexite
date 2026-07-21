@@ -345,6 +345,9 @@ async function onlineLearn(opts) {
     globalThis.__importW=(s)=>{ if(!s) return; for(const part of s.split(',')){ const c=part.indexOf(':'); __W[+part.slice(0,c)] = +part.slice(c+1); } };
   })();`);
   const sb = engine._sandbox;
+  // exploration: add +/- dither to each candidate move's evaluation so the
+  // greedy policy visits a wider variety of leaves.
+  if (opts.dither) engine.evalInRealm(`installEvalDither(${opts.dither});`);
   const lr = opts.lr, gamma = opts.gamma, betaB = opts.betaB;
   let b = 0, nTrans = 0, nGames = 0;                 // b = running average move points (baseline)
   // resume from a checkpoint if one exists (survives container restarts)
@@ -421,6 +424,7 @@ function main() {
     gamma: parseFloat(arg('--gamma', '1.0')),
     maxorder: parseInt(arg('--maxorder', '6'), 10),
     betaB: parseFloat(arg('--betaB', '0.02')),
+    dither: parseFloat(arg('--dither', '1')),
     // default to a non-deterministic seed (time + pid, so concurrent launches
     // differ); pass --seed explicitly to reproduce or to compare across LRs.
     seed: parseInt(arg('--seed', String(((Date.now() ^ (process.pid * 2654435761)) >>> 0) % 2000000000)), 10),

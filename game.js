@@ -1510,6 +1510,12 @@ function installSuperTable(t) { superTable = t; }
 let leaveHook = null;
 function installLeaveHook(f) { leaveHook = f; }
 
+// Headless-only: uniform +/- exploration noise added to each candidate's
+// evaluation, so a greedy policy occasionally takes a near-tie alternative
+// and visits a wider set of leaves. 0 in production (deterministic play).
+let evalDither = 0;
+function installEvalDither(d) { evalDither = d; }
+
 // Fetch and inflate the gzipped superleave table (browser). Best-effort:
 // on any failure the engine simply keeps using the linear model.
 async function loadSuperTable() {
@@ -1854,6 +1860,7 @@ async function scanStaticMoves(rack, onMove) {
           }
           val += leaveScale * lv;
         }
+        if (evalDither) val += evalDither * (Math.random() * 2 - 1);
         onMove(m, val);
       }
     }
