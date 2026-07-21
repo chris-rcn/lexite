@@ -174,13 +174,10 @@ async function recordTrajWorker(spec) {
     const bag = buildSeededBag(mulberry32(spec.gameSeed + g)); g++;
     const prev = ['', ''];
     await playGame([engine, engine], bag, false, '', null, (seat, type, points, leftover) => {
-      if (type === 'play') {
-        const r = sortLeave(leftover);
-        if (prev[seat] !== undefined) rows.push({ l: prev[seat], p: points, r });
-        prev[seat] = r;
-      } else {
-        prev[seat] = undefined; // exchange/pass: break the chain
-      }
+      if (type === 'pass') { prev[seat] = undefined; return; } // pass: full rack kept, out of domain
+      const r = sortLeave(leftover);                           // play or exchange (points=0): valid leave
+      if (prev[seat] !== undefined) rows.push({ l: prev[seat], p: points, r });
+      prev[seat] = r;
     });
   }
   process.stdout.write(JSON.stringify({ rows: rows.slice(0, spec.count) }));
@@ -364,7 +361,10 @@ async function onlineLearn(opts) {
   const prev = ['', ''];
   const spot = () => ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'].map(s => `${s}=${sb.__spotValue(s).toFixed(2)}`).join(' ');
   const onTurn = (seat, type, points, leftover) => {
-    if (type !== 'play') { prev[seat] = undefined; return; }
+    // play and exchange both end with a valid kept leave (points=0 for an
+    // exchange); only a pass keeps the full 7-tile rack (out of domain, no
+    // draw), so it breaks the chain.
+    if (type === 'pass') { prev[seat] = undefined; return; }
     const r = sortLeave(leftover);
     if (prev[seat] !== undefined) {                 // TD update on l = prev[seat] (leave held at turn start)
       sb.__tdUpdate(prev[seat], points, r, b, lr, gamma);
@@ -424,7 +424,7 @@ function main() {
     gamma: parseFloat(arg('--gamma', '1.0')),
     maxorder: parseInt(arg('--maxorder', '6'), 10),
     betaB: parseFloat(arg('--betaB', '0.02')),
-    dither: parseFloat(arg('--dither', '1')),
+    dither: parseFloat(arg('--dither', '0.1')),
     // default to a non-deterministic seed (time + pid, so concurrent launches
     // differ); pass --seed explicitly to reproduce or to compare across LRs.
     seed: parseInt(arg('--seed', String(((Date.now() ^ (process.pid * 2654435761)) >>> 0) % 2000000000)), 10),

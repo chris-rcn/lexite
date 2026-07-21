@@ -259,12 +259,14 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
         if (idx === -1) throw new Error(`engine exchanged a tile not in its rack: ${JSON.stringify(t)}`);
         removed.push(...racks[seat].splice(idx, 1));
       }
+      // The kept tiles (rack minus discards, pre-draw) are a valid leave, so
+      // an exchange is a real 0-reward transition, just like a play.
+      if (onTurn) onTurn(seat, 'exchange', 0, racks[seat].slice());
       draw(seat); // replacements come out before the discards return
       // Discards go to the bottom of the bag (drawn last): deterministic
       // without an RNG, and they cannot be immediately redrawn — the
       // practical effect of a shuffle at these bag depths.
       for (const t of removed) bag.unshift(t.isBlank ? '?' : t.letter);
-      if (onTurn) onTurn(seat, 'exchange', 0, null);
       if (verbose) console.log(`  [${label}] seat${seat}: exchanged ${removed.length}`);
       if (++scoreless >= 6) { reason = 'passes'; break; }
     } else {
