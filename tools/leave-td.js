@@ -419,7 +419,8 @@ function main() {
     out: path.resolve(process.cwd(), arg('--out', 'leaves.bin.gz')),
   });
   if (cmd === 'online-learn') return onlineLearn({
-    games: parseInt(arg('--games', '20000'), 10),
+    games: process.argv.includes('--games') ? parseInt(arg('--games'), 10) : Infinity, // unlimited unless capped
+
     lr: parseFloat(arg('--lr', '0.05')),
     gamma: parseFloat(arg('--gamma', '1.0')),
     maxorder: parseInt(arg('--maxorder', '6'), 10),
