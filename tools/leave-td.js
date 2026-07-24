@@ -338,7 +338,7 @@ async function onlineLearn(opts) {
     // weight-magnitude health: avg |w| over touched features, plus max (divergence canary)
     globalThis.__wStats=()=>{ let s=0,n=0,mx=0; for(let i=0;i<SIZE;i++){ const a=__W[i]<0?-__W[i]:__W[i]; if(a>0){ s+=a; n++; if(a>mx)mx=a; } } return { avg:n?s/n:0, nz:n, max:mx }; };
     // checkpoint: export/import the (sparse) nonzero weights as a compact string
-    globalThis.__exportW=()=>{ let out=''; for(let i=0;i<SIZE;i++){ if(__W[i]!==0){ out += (out?',':'') + i + ':' + __W[i]; } } return out; };
+    globalThis.__exportW=()=>{ let out=''; for(let i=0;i<SIZE;i++){ if(__W[i]!==0){ const r=Math.round(__W[i]*1e4)/1e4; if(r!==0) out += (out?',':'') + i + ':' + r; } } return out; };
     globalThis.__importW=(s)=>{ if(!s) return; for(const part of s.split(',')){ const c=part.indexOf(':'); __W[+part.slice(0,c)] = +part.slice(c+1); } };
   })();`);
   const sb = engine._sandbox;
