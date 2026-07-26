@@ -68,6 +68,7 @@ function parseArgs(argv) {
     else if (arg === '--pairs') opts.pairs = parseInt(argv[++i], 10);
     else if (arg === '--seed') opts.seed = parseInt(argv[++i], 10);
     else if (arg === '--jobs') opts.jobs = parseInt(argv[++i], 10);
+    else if (arg === '--static') opts.static = true;
     else if (arg === '--verbose') opts.verbose = true;
     else if (arg === '--play-one') opts.playOne = argv[++i]; // internal: worker mode
     else { console.error(`Unknown argument: ${arg}`); process.exit(2); }
@@ -309,8 +310,8 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
 // result record in engine-A/B terms rather than seat terms.
 async function playSpec(spec, verbose, label) {
   const words = loadWords();
-  const A = loadEngine(spec.a, words);
-  const B = loadEngine(spec.b, words);
+  const A = loadEngine(spec.a, words, { staticOnly: spec.staticOnly });
+  const B = loadEngine(spec.b, words, { staticOnly: spec.staticOnly });
   const seatEngines = spec.swap ? [B, A] : [A, B];
   const g = await playGame(seatEngines, spec.bag, verbose, label);
   return {
@@ -377,8 +378,8 @@ async function main() {
   for (let p = 0; p < opts.pairs; p++) {
     const seed = opts.seed + p;
     const bag = buildSeededBag(mulberry32(seed));
-    specs.push({ a: aFile, b: bFile, swap: false, bag, seed });
-    specs.push({ a: aFile, b: bFile, swap: true, bag, seed });
+    specs.push({ a: aFile, b: bFile, swap: false, bag, seed, staticOnly: opts.static });
+    specs.push({ a: aFile, b: bFile, swap: true, bag, seed, staticOnly: opts.static });
   }
 
   const t0 = Date.now();
