@@ -169,7 +169,8 @@ function loadEngine(file, words, opts = {}) {
       installSuperTable(t);
     }
     if (${opts.staticOnly ? 'true' : 'false'} && typeof SIM !== 'undefined') SIM.CANDIDATES = 1;
-    if (${opts.bagAware ? 'true' : 'false'} && typeof installBagAwareLeave === 'function') installBagAwareLeave(true);
+    ${opts.bagAware === undefined ? ''
+      : `if (typeof installBagAwareLeave === 'function') installBagAwareLeave(${opts.bagAware ? 'true' : 'false'});`}
     globalThis.__bestMove = (positionJson) => {
       const pos = JSON.parse(positionJson);
       state.board = pos.board;
