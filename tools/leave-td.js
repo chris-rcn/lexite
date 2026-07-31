@@ -348,22 +348,26 @@ async function onlineLearn(opts) {
   // greedy policy visits a wider variety of leaves.
   if (opts.dither) engine.evalInRealm(`installEvalDither(${opts.dither});`);
   const lr = opts.lr, gamma = opts.gamma, betaB = opts.betaB;
+  // Error EMAs decay far slower than b: we log every ~1150 transitions, so a
+  // b-speed (~50-transition) window would just sample noise. ~10k-transition
+  // window (~9 log ticks) gives a stable read. Checkpointed, so the slow
+  // window survives recycles instead of resetting to 0 each resume.
+  const betaErr = 0.0001;
   let b = 0, nTrans = 0, nGames = 0;                 // b = running average move points (baseline)
+  let eAbs = 0, eSq = 0;                             // running EMA of |TD err| and err^2
   // resume from a checkpoint if one exists (survives container restarts)
   if (opts.ckpt && fs.existsSync(opts.ckpt)) {
     const st = JSON.parse(fs.readFileSync(opts.ckpt, 'utf8'));
     sb.__importW(st.w); b = st.b; nGames = st.games; nTrans = st.trans;
+    if (st.eAbs !== undefined) { eAbs = st.eAbs; eSq = st.eSq; }  // older ckpts lack these
     console.log(`resumed from ${opts.ckpt}: games ${nGames}, trans ${nTrans}, b=${b.toFixed(1)}`);
   }
   const saveCkpt = () => {                            // atomic write (tmp + rename)
     if (!opts.ckpt) return;
-    fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, b, w: sb.__exportW() }));
+    fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, b, eAbs, eSq, w: sb.__exportW() }));
     fs.renameSync(opts.ckpt + '.tmp', opts.ckpt);
   };
   const prev = ['', ''];
-  // running |TD error| and RMSE, tracked with the same decay as b (display
-  // only; not checkpointed, so they warm up fresh on each resume).
-  let eAbs = 0, eSq = 0;
   const spot = () => ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'].map(s => `${s}=${sb.__spotValue(s).toFixed(2)}`).join(' ');
   const onTurn = (seat, type, points, leftover) => {
     // play and exchange both end with a valid kept leave (points=0 for an
@@ -373,8 +377,8 @@ async function onlineLearn(opts) {
     const r = sortLeave(leftover);
     if (prev[seat] !== undefined) {                 // TD update on l = prev[seat] (leave held at turn start)
       const err = sb.__tdUpdate(prev[seat], points, r, b, lr, gamma);
-      eAbs += betaB * (Math.abs(err) - eAbs);
-      eSq += betaB * (err * err - eSq);
+      eAbs += betaErr * (Math.abs(err) - eAbs);
+      eSq += betaErr * (err * err - eSq);
       b += betaB * (points - b);
       nTrans++;
     }
