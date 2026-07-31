@@ -331,8 +331,10 @@ async function onlineLearn(opts) {
       fill(rcBuf,rStr); let Vr=0; each(rcBuf,(rank,mult)=>{Vr+=mult*__W[rank];});
       fill(lcBuf,lStr); let m=0,V=0,norm=0;
       each(lcBuf,(rank,mult)=>{rankBuf[m]=rank;multBuf[m]=mult;V+=mult*__W[rank];norm+=mult*mult;m++;});
-      const step=lr*((points-b)+gamma*Vr-V)/(norm+1);
+      const err=(points-b)+gamma*Vr-V;
+      const step=lr*err/(norm+1);
       for(let j=0;j<m;j++) __W[rankBuf[j]]+=step*multBuf[j];
+      return err;                                   // TD error, for tracking
     };
     globalThis.__spotValue=(s)=>{ fill(lcBuf,s); let v=0; each(lcBuf,(rank,mult)=>{v+=mult*__W[rank];}); return v; };
     // weight-magnitude health: avg |w| over touched features, plus max (divergence canary)
@@ -359,6 +361,9 @@ async function onlineLearn(opts) {
     fs.renameSync(opts.ckpt + '.tmp', opts.ckpt);
   };
   const prev = ['', ''];
+  // running |TD error| and RMSE, tracked with the same decay as b (display
+  // only; not checkpointed, so they warm up fresh on each resume).
+  let eAbs = 0, eSq = 0;
   const spot = () => ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'].map(s => `${s}=${sb.__spotValue(s).toFixed(2)}`).join(' ');
   const onTurn = (seat, type, points, leftover) => {
     // play and exchange both end with a valid kept leave (points=0 for an
@@ -367,7 +372,9 @@ async function onlineLearn(opts) {
     if (type === 'pass') { prev[seat] = undefined; return; }
     const r = sortLeave(leftover);
     if (prev[seat] !== undefined) {                 // TD update on l = prev[seat] (leave held at turn start)
-      sb.__tdUpdate(prev[seat], points, r, b, lr, gamma);
+      const err = sb.__tdUpdate(prev[seat], points, r, b, lr, gamma);
+      eAbs += betaB * (Math.abs(err) - eAbs);
+      eSq += betaB * (err * err - eSq);
       b += betaB * (points - b);
       nTrans++;
     }
@@ -382,7 +389,7 @@ async function onlineLearn(opts) {
     nGames++;
     if (nGames % opts.logEvery === 0) {
       const st = sb.__wStats();
-      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)} | ${((Date.now() - t0) / 1000).toFixed(0)}s | b=${b.toFixed(1)} | avg|w|=${st.avg.toFixed(3)} nz=${st.nz} max=${st.max.toFixed(1)} | ${spot()}`);
+      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)} | ${((Date.now() - t0) / 1000).toFixed(0)}s | b=${b.toFixed(1)} | |err|=${eAbs.toFixed(2)} rmse=${Math.sqrt(eSq).toFixed(2)} | avg|w|=${st.avg.toFixed(3)} nz=${st.nz} max=${st.max.toFixed(1)} | ${spot()}`);
     }
     if (nGames % opts.saveEvery === 0) saveCkpt();
   }
