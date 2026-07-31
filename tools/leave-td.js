@@ -310,7 +310,11 @@ async function onlineLearn(opts) {
   // crossing the vm membrane; only the TD update (once per transition) does.
   engine.evalInRealm(`(function(){
     const NT = 27, SIZE = ${SIZE}, MAXORD = ${opts.maxorder};
-    const BINOM = []; for (let n=0;n<=6;n++){BINOM[n]=[];for(let k=0;k<=6;k++)BINOM[n][k]=k>n?0:(k===0?1:BINOM[n-1][k-1]+BINOM[n-1][k]);}
+    // Pascal triangle to n=7: a plain leave is <=6 tiles, but the bag-aware
+    // policy values a leave by projecting one drawn tile onto it, so a single
+    // letter's count can reach 7 as the BINOM[c][s] multiplicity coefficient.
+    // Ranked sub-leaves stay <=MAXORD tiles, so only this coefficient needs it.
+    const BINOM = []; for (let n=0;n<=7;n++){BINOM[n]=[];for(let k=0;k<=7;k++)BINOM[n][k]=k>n?0:(k===0?1:BINOM[n-1][k-1]+BINOM[n-1][k]);}
     const __W = new Float64Array(SIZE), _sub = new Int32Array(NT);
     function each(counts, cb){
       const present=[]; for(let i=0;i<NT;i++) if(counts[i]>0){present.push(i);_sub[i]=0;}
