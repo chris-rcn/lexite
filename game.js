@@ -1516,6 +1516,23 @@ function installLeaveHook(f) { leaveHook = f; }
 let evalDither = 0;
 function installEvalDither(d) { evalDither = d; }
 
+// Bag-aware leave: value a leave by the expectation of leaveValue over the
+// next tile drawn from the unseen pool, rather than the bag-blind table
+// value. Treats the leave evaluator as a black box, so it works with the
+// linear model or a superleave table. Off by default (production behavior).
+let bagAwareLeave = false;
+function installBagAwareLeave(on) { bagAwareLeave = !!on; }
+
+// Full tile distribution by letter code, built lazily (TILE_DATA counts).
+let FULL_DIST = null;
+function ensureFullDist() {
+  if (FULL_DIST) return;
+  FULL_DIST = new Int32Array(27);
+  for (const [ch, [count]] of Object.entries(TILE_DATA)) {
+    FULL_DIST[ch === '?' ? 26 : ch.charCodeAt(0) - 65] = count;
+  }
+}
+
 // Fetch and inflate the gzipped superleave table (browser). Best-effort:
 // on any failure the engine simply keeps using the linear model.
 async function loadSuperTable() {
@@ -1580,6 +1597,24 @@ function leaveValueFromCounts(counts) {
     }
   }
   return val;
+}
+
+// Bag-aware leave value: E[ leaveValue(leave + one drawn tile) ] over the
+// unseen pool. `counts` is the leave (mutated in place and restored); the
+// pool is fixed for the turn. Model-agnostic — leaveValueFromCounts routes
+// to whichever evaluator is installed. Note: for a 6-tile leave the drawn
+// completion is 7 tiles, outside a superleave table's domain, so those
+// fall back to the linear model inside leaveValueFromCounts.
+function bagAwareLeaveValue(counts, unseen, total) {
+  let ev = 0;
+  for (let t = 0; t < 27; t++) {
+    const u = unseen[t];
+    if (u <= 0) continue;
+    counts[t]++;
+    ev += u * leaveValueFromCounts(counts);
+    counts[t]--;
+  }
+  return ev / total;
 }
 
 // ============================================================
@@ -1819,6 +1854,24 @@ async function scanStaticMoves(rack, onMove) {
   for (const t of rack) {
     rackCounts[t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65]++;
   }
+  // Bag-aware leave: the unseen pool (full distribution minus the board and
+  // our own rack) is what we might draw into; it is fixed for the turn, so
+  // build it once. This is inferable public info — no need for the real bag.
+  let unseenCounts = null, unseenTotal = 0;
+  if (useLeave && bagAwareLeave) {
+    ensureFullDist();
+    unseenCounts = Int32Array.from(FULL_DIST);
+    for (let r = 0; r < 15; r++) {
+      for (let c = 0; c < 15; c++) {
+        const cell = state.board[r][c];
+        if (cell) unseenCounts[cell.isBlank ? 26 : cell.letter.toUpperCase().charCodeAt(0) - 65]--;
+      }
+    }
+    for (let k = 0; k < 27; k++) {
+      unseenCounts[k] -= rackCounts[k];
+      if (unseenCounts[k] > 0) unseenTotal += unseenCounts[k]; else unseenCounts[k] = 0;
+    }
+  }
   // Many candidates play the same tiles in different places and share a
   // leave, so leave values are memoized per turn by the multiset of
   // played tiles (canonical sorted-code key).
@@ -1854,7 +1907,9 @@ async function scanStaticMoves(rack, onMove) {
           let lv = leaveCache.get(key);
           if (lv === undefined) {
             for (const c of codes) rackCounts[c]--;
-            lv = leaveValueFromCounts(rackCounts);
+            lv = unseenTotal > 0
+              ? bagAwareLeaveValue(rackCounts, unseenCounts, unseenTotal)
+              : leaveValueFromCounts(rackCounts);
             for (const c of codes) rackCounts[c]++;
             leaveCache.set(key, lv);
           }
