@@ -349,10 +349,10 @@ async function onlineLearn(opts) {
   if (opts.dither) engine.evalInRealm(`installEvalDither(${opts.dither});`);
   const lr = opts.lr, gamma = opts.gamma, betaB = opts.betaB;
   // Error EMAs decay far slower than b: we log every ~1150 transitions, so a
-  // b-speed (~50-transition) window would just sample noise. ~2k-transition
-  // window (~2 log ticks) smooths the noise while staying responsive.
+  // b-speed (~50-transition) window would just sample noise. ~3k-transition
+  // window (~3 log ticks) smooths the noise while staying responsive.
   // Checkpointed, so the window survives recycles instead of resetting to 0.
-  const betaErr = 0.0005;
+  const betaErr = 0.0003;
   let b = 0, nTrans = 0, nGames = 0;                 // b = running average move points (baseline)
   let eAbs = 0, eSq = 0;                             // running EMA of |TD err| and err^2
   // resume from a checkpoint if one exists (survives container restarts)
