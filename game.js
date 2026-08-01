@@ -1957,6 +1957,12 @@ const SIM = {
   PRUNE_EVERY: 2,   // prune check cadence (in worlds) after the minimum
   TERMINAL_BAG: 8,  // with fewer real bag tiles than this, worlds play
                     // out to the end of the game instead of 2 plies
+  PRIOR: 0,         // static prior weight: each candidate's move+leave score
+                    // counts as this many virtual simulations (all equal to
+                    // that static value) blended into its paired comparison,
+                    // so a challenger must overcome the incumbent's static
+                    // edge as well as win on simulation. 0 = off (the sim
+                    // means alone decide, treating all top-K as equals).
 };
 
 // Play a sampled world to the end of the game after the candidate move:
@@ -2101,7 +2107,7 @@ function bestExchangeKeep(rack) {
   for (let i = 0; i < n; i++) {
     (bestMask & (1 << i) ? keep : tiles).push(rack[i]);
   }
-  return { keep, tiles };
+  return { keep, tiles, value: bestVal };
 }
 
 // Choose among the top static candidates by 2-ply simulation: sample the
@@ -2125,13 +2131,19 @@ async function findBestSimMove(rack) {
   }
 
   // Arms: move candidates in static order (arm 0 is the incumbent),
-  // then the exchange as a challenger.
+  // then the exchange as a challenger. staticVal is the move+leave score
+  // that ranked the candidate (arm 0 holds the maximum); it seeds the
+  // SIM.PRIOR virtual samples in the paired comparison below. The exchange
+  // scores 0 on the board, so its static value is just its (pool-aware)
+  // leave value, damped by the same bag taper the move leaves carry.
+  const leaveScale0 = Math.min(1, state.bag.length / 7);
   const arms = cands.map(c => ({
     move: c.m, placements: c.m.placements, score: c.m.score,
-    kept: rackWithout(rack, c.m.placements),
+    kept: rackWithout(rack, c.m.placements), staticVal: c.val,
   }));
   if (exchange) {
-    arms.push({ move: null, placements: null, score: 0, kept: exchange.keep, tiles: exchange.tiles });
+    arms.push({ move: null, placements: null, score: 0, kept: exchange.keep,
+      tiles: exchange.tiles, staticVal: leaveScale0 * exchange.value });
   }
   const armResult = a => a.move ? a.move : { exchange: true, tiles: a.tiles };
   if (arms.length === 1) return armResult(arms[0]);
@@ -2153,17 +2165,26 @@ async function findBestSimMove(rack) {
   }
 
   // Paired statistics of candidate ci vs candidate base over the first
-  // n shared worlds: [mean, standard error of the mean difference].
+  // n shared worlds: [mean, standard error of the mean difference]. When
+  // SIM.PRIOR (X) is set, the candidates' static score gap is folded in as
+  // X extra virtual paired samples, each exactly equal to that gap: the
+  // pooled mean is pulled toward the static difference and the pooled SE
+  // shrinks, so the incumbent's static edge counts as X simulations of
+  // evidence. X = 0 makes N = n and reduces this to the plain paired mean.
   const pairedStats = (vals, ci, base, n) => {
-    let mean = 0;
-    for (let w = 0; w < n; w++) mean += vals[ci][w] - vals[base][w];
-    mean /= n;
+    const X = SIM.PRIOR;
+    const dPrior = X > 0 ? arms[ci].staticVal - arms[base].staticVal : 0;
+    let sum = 0;
+    for (let w = 0; w < n; w++) sum += vals[ci][w] - vals[base][w];
+    const N = n + X;
+    const mean = (sum + X * dPrior) / N;
     let varSum = 0;
     for (let w = 0; w < n; w++) {
       const d = vals[ci][w] - vals[base][w] - mean;
       varSum += d * d;
     }
-    return [mean, n > 1 ? Math.sqrt(varSum / (n - 1) / n) : 0];
+    if (X > 0) varSum += X * (dPrior - mean) * (dPrior - mean);
+    return [mean, N > 1 ? Math.sqrt(varSum / (N - 1) / N) : 0];
   };
 
   inSimulation = true;
