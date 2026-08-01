@@ -246,7 +246,7 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
   let reason;
 
   for (;;) {
-    if (onPosition) onPosition(board, bag, isFirstMove);
+    if (onPosition) onPosition(board, bag, isFirstMove, racks[seat]);
     const move = await engines[seat].bestMove(board, racks[seat], isFirstMove, bag.length);
     moves++;
     if (!move) {
