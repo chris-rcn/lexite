@@ -1936,12 +1936,21 @@ async function findBestStaticMove(rack) {
   return bestMove;
 }
 
-// Top k moves by static value; ties keep scan order (stable sort), so
-// element 0 is exactly findBestStaticMove's choice.
+// Candidate moves for simulation, best static value first (stable sort, so
+// element 0 is exactly findBestStaticMove's choice). In fixed-K mode returns
+// the top k. In margin mode (SIM.CAND_MARGIN > 0) returns every move within
+// CAND_MARGIN points of the best — at least one, at most CAND_MAX — so the
+// arm count adapts to how many moves are actually competitive.
 async function collectTopCandidates(rack, k) {
   const all = [];
   await scanStaticMoves(rack, (m, val) => { all.push({ m, val }); });
   all.sort((a, b) => b.val - a.val);
+  if (SIM.CAND_MARGIN > 0 && all.length > 0) {
+    const cut = all[0].val - SIM.CAND_MARGIN;
+    let n = 1; // always keep the static best
+    while (n < all.length && n < SIM.CAND_MAX && all[n].val >= cut) n++;
+    return all.slice(0, n);
+  }
   return all.slice(0, k);
 }
 
@@ -1950,7 +1959,17 @@ async function collectTopCandidates(rack, k) {
 // ============================================================
 
 const SIM = {
-  CANDIDATES: 5,    // static candidates evaluated by simulation
+  CANDIDATES: 5,    // static candidates evaluated by simulation (fixed-K mode)
+  // Margin mode: when CAND_MARGIN > 0, simulate every move whose static
+  // move+leave value is within CAND_MARGIN points of the best, instead of a
+  // fixed count — the arm set adapts to the position (one arm when a move is
+  // clearly best, many when several are close), capped at CAND_MAX. This ties
+  // candidate inclusion to the same static gap the overrule prior uses: a
+  // move too far back for simulation to plausibly overturn is never an arm,
+  // which both saves reply searches and removes it as a noise-overrule risk.
+  // 0 = off (use the fixed CANDIDATES count).
+  CAND_MARGIN: 0,
+  CAND_MAX: 20,     // hard cap on arms in margin mode (compute backstop)
   SAMPLES: 30,      // sampled worlds, shared across candidates
   CONFIDENCE: 1.5,  // paired z threshold to overrule the static choice
   MIN_WORLDS: 6,    // worlds evaluated before pruning may trigger
@@ -2355,7 +2374,7 @@ async function findBestMove(rack) {
   ensureTrie();
   ensureLeaveTables();
   if (state.bag.length === 0) return findBestEndgameMove(rack);
-  if (SIM.CANDIDATES > 1 && !inSimulation) return findBestSimMove(rack);
+  if ((SIM.CANDIDATES > 1 || SIM.CAND_MARGIN > 0) && !inSimulation) return findBestSimMove(rack);
   return findBestStaticMove(rack);
 }
 
