@@ -1937,21 +1937,20 @@ async function findBestStaticMove(rack) {
 }
 
 // Candidate moves for simulation, best static value first (stable sort, so
-// element 0 is exactly findBestStaticMove's choice). In fixed-K mode returns
-// the top k. In margin mode (SIM.CAND_MARGIN > 0) returns every move within
-// CAND_MARGIN points of the best — at least one, at most CAND_MAX — so the
-// arm count adapts to how many moves are actually competitive.
+// element 0 is exactly findBestStaticMove's choice). Returns the top k, then
+// (if SIM.CAND_MARGIN > 0) prunes the tail of moves more than CAND_MARGIN
+// points behind the best — so the arm count adapts down when a move is
+// clearly best, but never exceeds k. At least the static best is kept.
 async function collectTopCandidates(rack, k) {
   const all = [];
   await scanStaticMoves(rack, (m, val) => { all.push({ m, val }); });
   all.sort((a, b) => b.val - a.val);
-  if (SIM.CAND_MARGIN > 0 && all.length > 0) {
+  let n = Math.min(k, all.length);
+  if (SIM.CAND_MARGIN > 0 && n > 0) {
     const cut = all[0].val - SIM.CAND_MARGIN;
-    let n = 1; // always keep the static best
-    while (n < all.length && n < SIM.CAND_MAX && all[n].val >= cut) n++;
-    return all.slice(0, n);
+    while (n > 1 && all[n - 1].val < cut) n--; // drop moves beyond the margin
   }
-  return all.slice(0, k);
+  return all.slice(0, n);
 }
 
 // ============================================================
@@ -1959,24 +1958,14 @@ async function collectTopCandidates(rack, k) {
 // ============================================================
 
 const SIM = {
-  CANDIDATES: 5,    // static candidates evaluated by simulation (fixed-K mode)
-  // Margin mode: when CAND_MARGIN > 0, simulate every move whose static
-  // move+leave value is within CAND_MARGIN points of the best, instead of a
-  // fixed count — the arm set adapts to the position (one arm when a move is
-  // clearly best, many when several are close), capped at CAND_MAX. This ties
-  // candidate inclusion to the same static gap the overrule prior uses: a
-  // move too far back for simulation to plausibly overturn is never an arm,
-  // which both saves reply searches and removes it as a noise-overrule risk.
-  // 0 = off (use the fixed CANDIDATES count). CAND_MARGIN was measured: across
-  // ~3800 midgame positions (bag >= 8), the deepest move a simulation could
-  // genuinely overrule the static best into sat 10 points back, so a move more
-  // than 10 points behind is never worth simulating. CAND_MAX stays at 5 (the
-  // long-standing candidate count) as a compute cap: within the 10-point
-  // margin the arm set adapts down when a move is clearly best, but never
-  // exceeds 5 arms -- so genuine overrides deeper than rank 5 (rare) are not
-  // pursued, trading a little coverage for bounded cost.
+  CANDIDATES: 5,    // max static candidates (top-K) evaluated by simulation
+  // CAND_MARGIN prunes that top-K set: a move more than this many static
+  // move+leave points behind the best is dropped (it can't be genuinely
+  // overruled into, so simulating it only wastes reply searches and risks a
+  // noise overrule). 0 = no pruning (use the full top-CANDIDATES). Measured:
+  // across ~3800 midgame positions (bag >= 8), the deepest move a simulation
+  // could genuinely overrule the static best into sat 10 points back.
   CAND_MARGIN: 10,
-  CAND_MAX: 5,      // hard cap on arms in margin mode (compute backstop)
   TRACE: 0,         // headless diagnostic: when set, records override stats
   _gaps: [],        // static gap (best - chosen) on each override decision
   _overrides: 0,    // count of decisions where simulation overruled arm 0
@@ -2421,7 +2410,7 @@ async function findBestMove(rack) {
   ensureTrie();
   ensureLeaveTables();
   if (state.bag.length === 0) return findBestEndgameMove(rack);
-  if ((SIM.CANDIDATES > 1 || SIM.CAND_MARGIN > 0) && !inSimulation) return findBestSimMove(rack);
+  if (SIM.CANDIDATES > 1 && !inSimulation) return findBestSimMove(rack);
   return findBestStaticMove(rack);
 }
 
