@@ -1967,9 +1967,16 @@ const SIM = {
   // candidate inclusion to the same static gap the overrule prior uses: a
   // move too far back for simulation to plausibly overturn is never an arm,
   // which both saves reply searches and removes it as a noise-overrule risk.
-  // 0 = off (use the fixed CANDIDATES count).
-  CAND_MARGIN: 0,
-  CAND_MAX: 20,     // hard cap on arms in margin mode (compute backstop)
+  // 0 = off (use the fixed CANDIDATES count). CAND_MARGIN was measured: across
+  // ~3800 midgame positions (bag >= 8), the deepest move a simulation could
+  // genuinely overrule the static best into sat 10 points back, so a move more
+  // than 10 points behind is never worth simulating. CAND_MAX stays at 5 (the
+  // long-standing candidate count) as a compute cap: within the 10-point
+  // margin the arm set adapts down when a move is clearly best, but never
+  // exceeds 5 arms -- so genuine overrides deeper than rank 5 (rare) are not
+  // pursued, trading a little coverage for bounded cost.
+  CAND_MARGIN: 10,
+  CAND_MAX: 5,      // hard cap on arms in margin mode (compute backstop)
   TRACE: 0,         // headless diagnostic: when set, records override stats
   _gaps: [],        // static gap (best - chosen) on each override decision
   _overrides: 0,    // count of decisions where simulation overruled arm 0
