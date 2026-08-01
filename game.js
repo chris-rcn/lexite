@@ -1975,6 +1975,13 @@ const SIM = {
   _overrides: 0,    // count of decisions where simulation overruled arm 0
   _maxGap: -1,      // largest override gap seen
   _maxPos: null,    // { gap, board, rack, bagCount, ... } for that override
+  // Per-decision result of the most recent simulated decision (for a driver
+  // that escalates sample count until an override is statistically resolved).
+  _lastOverride: null, // did the last sim decision overrule arm 0?
+  _lastGap: 0,      // static gap (best - chosen) of that decision
+  _lastRank: 0,     // chosen arm index (0 = static best)
+  _lastZ: 0,        // paired z (mean/se) of chosen vs arm 0: override strength
+  _lastNArms: 0,    // number of candidate arms considered (margin/count binding)
   SAMPLES: 30,      // sampled worlds, shared across candidates
   CONFIDENCE: 1.5,  // paired z threshold to overrule the static choice
   MIN_WORLDS: 6,    // worlds evaluated before pruning may trigger
@@ -2369,22 +2376,32 @@ async function findBestSimMove(rack) {
       if (se === 0 || mean > SIM.CONFIDENCE * se) bestIdx = ci;
     }
   }
-  if (SIM.TRACE && bestIdx !== 0) {
-    const gap = arms[0].staticVal - arms[bestIdx].staticVal;
-    SIM._overrides++;
-    SIM._gaps.push(gap);
-    if (gap > SIM._maxGap) {
-      SIM._maxGap = gap;
-      SIM._maxPos = {
-        gap,
-        bestStatic: arms[0].staticVal,
-        chosenStatic: arms[bestIdx].staticVal,
-        chosenArm: bestIdx,
-        nArms: K,
-        bagCount: state.bag.length,
-        rack: rack.map(t => (t.isBlank ? '?' : t.letter.toUpperCase())).join(''),
-        board: JSON.parse(JSON.stringify(state.board)),
-      };
+  if (SIM.TRACE) {
+    const override = bestIdx !== 0;
+    SIM._lastOverride = override;
+    SIM._lastRank = bestIdx;
+    SIM._lastNArms = K;
+    SIM._lastGap = override ? arms[0].staticVal - arms[bestIdx].staticVal : 0;
+    if (override) {
+      const [mean, se] = pairedStats(vals, bestIdx, 0, M);
+      SIM._lastZ = se > 0 ? mean / se : (mean > 0 ? 1e9 : 0);
+      SIM._overrides++;
+      SIM._gaps.push(SIM._lastGap);
+      if (SIM._lastGap > SIM._maxGap) {
+        SIM._maxGap = SIM._lastGap;
+        SIM._maxPos = {
+          gap: SIM._lastGap,
+          bestStatic: arms[0].staticVal,
+          chosenStatic: arms[bestIdx].staticVal,
+          chosenArm: bestIdx,
+          nArms: K,
+          bagCount: state.bag.length,
+          rack: rack.map(t => (t.isBlank ? '?' : t.letter.toUpperCase())).join(''),
+          board: JSON.parse(JSON.stringify(state.board)),
+        };
+      }
+    } else {
+      SIM._lastZ = 0;
     }
   }
   return armResult(arms[bestIdx]);
