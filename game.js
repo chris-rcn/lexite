@@ -1970,6 +1970,11 @@ const SIM = {
   // 0 = off (use the fixed CANDIDATES count).
   CAND_MARGIN: 0,
   CAND_MAX: 20,     // hard cap on arms in margin mode (compute backstop)
+  TRACE: 0,         // headless diagnostic: when set, records override stats
+  _gaps: [],        // static gap (best - chosen) on each override decision
+  _overrides: 0,    // count of decisions where simulation overruled arm 0
+  _maxGap: -1,      // largest override gap seen
+  _maxPos: null,    // { gap, board, rack, bagCount, ... } for that override
   SAMPLES: 30,      // sampled worlds, shared across candidates
   CONFIDENCE: 1.5,  // paired z threshold to overrule the static choice
   MIN_WORLDS: 6,    // worlds evaluated before pruning may trigger
@@ -2362,6 +2367,24 @@ async function findBestSimMove(rack) {
       const [mean, se] = pairedStats(vals, ci, bestIdx, M);
       if (mean <= 0) continue;
       if (se === 0 || mean > SIM.CONFIDENCE * se) bestIdx = ci;
+    }
+  }
+  if (SIM.TRACE && bestIdx !== 0) {
+    const gap = arms[0].staticVal - arms[bestIdx].staticVal;
+    SIM._overrides++;
+    SIM._gaps.push(gap);
+    if (gap > SIM._maxGap) {
+      SIM._maxGap = gap;
+      SIM._maxPos = {
+        gap,
+        bestStatic: arms[0].staticVal,
+        chosenStatic: arms[bestIdx].staticVal,
+        chosenArm: bestIdx,
+        nArms: K,
+        bagCount: state.bag.length,
+        rack: rack.map(t => (t.isBlank ? '?' : t.letter.toUpperCase())).join(''),
+        board: JSON.parse(JSON.stringify(state.board)),
+      };
     }
   }
   return armResult(arms[bestIdx]);
