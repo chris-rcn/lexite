@@ -1963,7 +1963,35 @@ const SIM = {
                     // so a challenger must overcome the incumbent's static
                     // edge as well as win on simulation. 0 = off (the sim
                     // means alone decide, treating all top-K as equals).
+
+  // Bayesian overrule (alternative to the CONFIDENCE gate). Models the true
+  // value gap of a challenger vs the incumbent as mu ~ Normal(dStatic, tau^2)
+  // — the static move+leave gap is the prior mean, PRIOR_SD is the prior
+  // standard deviation (in points: how far the truth may sit from the static
+  // estimate) — then updates with the sampled worlds' paired differences and
+  // overrules iff the posterior probability that the challenger is better,
+  // P(mu > 0), exceeds OVERRULE_P. Unlike the frequentist gate this folds the
+  // prior and the uncertainty into one posterior; unlike a bare prior it is
+  // variance-aware, so a noisy edge cannot overrule on its mean alone. The
+  // prior naturally washes out as worlds accumulate. Off by default.
+  BAYES: 0,         // 1 enables the Bayesian decision in place of the gate
+  PRIOR_SD: 12,     // tau: prior SD (points) of the true gap around dStatic
+  OVERRULE_P: 0.9,  // posterior P(challenger better) needed to overrule
+  VAR_FLOOR: 1,     // floor on the per-world variance estimate (points^2)
 };
+
+// Standard normal CDF via a deterministic erf approximation (Abramowitz &
+// Stegun 7.1.26, |error| < 1.5e-7) — no Math.random, so mirrored matches
+// stay bit-exact. Used by the Bayesian overrule decision.
+function erfApprox(x) {
+  const s = x < 0 ? -1 : 1;
+  const ax = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * ax);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
+    - 0.284496736) * t + 0.254829592) * t * Math.exp(-ax * ax);
+  return s * y;
+}
+function normalCdf(z) { return 0.5 * (1 + erfApprox(z / Math.SQRT2)); }
 
 // Play a sampled world to the end of the game after the candidate move:
 // both sides move statically (our measurements put greedy within a point
@@ -2187,6 +2215,30 @@ async function findBestSimMove(rack) {
     return [mean, N > 1 ? Math.sqrt(varSum / (N - 1) / N) : 0];
   };
 
+  // Bayesian posterior probability that candidate ci is truly better than
+  // base, over the first n shared worlds. Prior: mu ~ N(dStatic, PRIOR_SD^2),
+  // with dStatic the static move+leave gap (<= 0 when base is the incumbent).
+  // Likelihood: the n paired differences have mean mbar and per-world
+  // variance s2, so mbar carries precision n/s2 about mu. Conjugate update
+  // gives a Normal posterior; return P(mu > 0) = Phi(postMean / postSD).
+  const bayesProb = (vals, ci, base, n) => {
+    let sum = 0;
+    for (let w = 0; w < n; w++) sum += vals[ci][w] - vals[base][w];
+    const mbar = sum / n;
+    let ss = 0;
+    for (let w = 0; w < n; w++) {
+      const d = vals[ci][w] - vals[base][w] - mbar;
+      ss += d * d;
+    }
+    const s2 = Math.max(n > 1 ? ss / (n - 1) : SIM.VAR_FLOOR, SIM.VAR_FLOOR);
+    const priorPrec = 1 / (SIM.PRIOR_SD * SIM.PRIOR_SD);
+    const dataPrec = n / s2;
+    const postVar = 1 / (priorPrec + dataPrec);
+    const mu0 = arms[ci].staticVal - arms[base].staticVal;
+    const postMean = postVar * (mu0 * priorPrec + mbar * dataPrec);
+    return normalCdf(postMean / Math.sqrt(postVar));
+  };
+
   inSimulation = true;
   const K = arms.length;
   const M = worlds.length;
@@ -2255,8 +2307,15 @@ async function findBestSimMove(rack) {
       if (n >= SIM.MIN_WORLDS && n < M && (n - SIM.MIN_WORLDS) % SIM.PRUNE_EVERY === 0) {
         for (let ci = 1; ci < K; ci++) {
           if (!alive[ci]) continue;
-          const [mean, se] = pairedStats(vals, ci, 0, n);
-          if (mean < 0 && (se === 0 || mean < -SIM.CONFIDENCE * se)) alive[ci] = false;
+          if (SIM.BAYES) {
+            // Retire a challenger once it is confidently worse than the
+            // incumbent: posterior P(better) below the complement of the
+            // overrule threshold — it can no longer clear OVERRULE_P.
+            if (bayesProb(vals, ci, 0, n) < 1 - SIM.OVERRULE_P) alive[ci] = false;
+          } else {
+            const [mean, se] = pairedStats(vals, ci, 0, n);
+            if (mean < 0 && (se === 0 || mean < -SIM.CONFIDENCE * se)) alive[ci] = false;
+          }
         }
       }
     }
@@ -2274,9 +2333,17 @@ async function findBestSimMove(rack) {
   let bestIdx = 0;
   for (let ci = 1; ci < K; ci++) {
     if (!alive[ci]) continue;
-    const [mean, se] = pairedStats(vals, ci, bestIdx, M);
-    if (mean <= 0) continue;
-    if (se === 0 || mean > SIM.CONFIDENCE * se) bestIdx = ci;
+    if (SIM.BAYES) {
+      // Overrule the incumbent only when the posterior says the challenger
+      // is better with probability > OVERRULE_P. The prior (centered on the
+      // static gap) and the sampled uncertainty are already folded in, so no
+      // separate significance gate is needed.
+      if (bayesProb(vals, ci, bestIdx, M) > SIM.OVERRULE_P) bestIdx = ci;
+    } else {
+      const [mean, se] = pairedStats(vals, ci, bestIdx, M);
+      if (mean <= 0) continue;
+      if (se === 0 || mean > SIM.CONFIDENCE * se) bestIdx = ci;
+    }
   }
   return armResult(arms[bestIdx]);
 }
