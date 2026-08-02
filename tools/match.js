@@ -168,7 +168,11 @@ function loadEngine(file, words, opts = {}) {
       for (let i = 0; i < s.length; i++) t[i] = s.charCodeAt(i);
       installSuperTable(t);
     }
-    if (${opts.staticOnly ? 'true' : 'false'} && typeof SIM !== 'undefined') SIM.CANDIDATES = 1;
+    // staticOnly: play the two simulation stages statically; the empty-bag
+    // endgame solver still runs (matching the pre-refactor staticOnly).
+    if (${opts.staticOnly ? 'true' : 'false'} && typeof STAGES !== 'undefined') {
+      STAGES.midgame.static = true; STAGES.lowbag.static = true;
+    }
     ${opts.bagAware === undefined ? ''
       : `if (typeof installBagAwareLeave === 'function') installBagAwareLeave(${opts.bagAware ? 'true' : 'false'});`}
     globalThis.__bestMove = (positionJson) => {

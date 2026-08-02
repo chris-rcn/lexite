@@ -1645,15 +1645,78 @@ function deriveOpponentRack(ownRack) {
   return opp;
 }
 
-const ENDGAME = {
-  NODE_MOVES: 8,        // candidate moves per inner search node
-  MOVEGEN_BUDGET: 900,  // move generations per decision; root moves are
-                        // evaluated best-first and the search keeps the
-                        // best fully-evaluated move when this is hit, so
-                        // this bounds worst-case time without a hard gate.
-                        // Sized to a ~1s p99 endgame move time (measured
-                        // p99 992ms at 900 vs 685ms at 600); the crowded
-                        // opening endgames need far more and stay capped.
+// ============================================================
+// PER-STAGE MOVE SELECTION
+// ============================================================
+// The game splits into three stages by bag count, and each stage's config
+// decides how its moves are chosen:
+//   bag >= LOWBAG_AT ...... midgame  (deep-bag simulation, 2-ply horizon)
+//   0 < bag < LOWBAG_AT ... lowbag   (simulation, worlds played to terminal)
+//   bag == 0 ............... endgame  (exact adversarial search)
+// `static: true` on any stage skips its lookahead and plays the static move
+// generator there. The two simulation stages share SIM_BASE and override only
+// what differs, so shared knobs stay in one place.
+const LOWBAG_AT = 8;
+
+const SIM_BASE = {
+  static: false,
+  candidates: 5,    // max static candidates (top-K) evaluated by simulation
+  // margin prunes that top-K set: a move more than this many static move+leave
+  // points behind the best is dropped (it can't be genuinely overruled into,
+  // so simulating it only wastes reply searches and risks a noise overrule).
+  // 0 = no pruning. Measured: across ~3800 midgame positions the deepest move
+  // a simulation could genuinely overrule the static best into sat 10 back.
+  margin: 10,
+  samples: 30,      // sampled worlds, shared across candidates
+  confidence: 1.5,  // paired z threshold to overrule the static choice
+  minWorlds: 6,     // worlds evaluated before pruning may trigger
+  pruneEvery: 2,    // prune check cadence (in worlds) after the minimum
+  // Bayesian overrule (alternative to the confidence gate). Models the true
+  // value gap of a challenger vs the incumbent as mu ~ Normal(dStatic, tau^2)
+  // — the static move+leave gap is the prior mean, priorSd is the prior SD (in
+  // points) — updates with the sampled paired differences, and overrules iff
+  // the posterior P(mu > 0) exceeds overruleP. Off by default.
+  bayes: 0,         // 1 enables the Bayesian decision in place of the gate
+  priorSd: 12,      // tau: prior SD (points) of the true gap around dStatic
+  overruleP: 0.9,   // posterior P(challenger better) needed to overrule
+  varFloor: 1,      // floor on the per-world variance estimate (points^2)
+};
+
+const STAGES = {
+  // Deep bag: value each world by a 2-ply horizon (score + leave differential).
+  midgame: { ...SIM_BASE, mode: 'horizon' },
+  // Near the end: worlds are cheap to finish, so play each out to the exact
+  // final margin. scoreAware ranks by P(win) against the current standing
+  // instead of mean margin; playoutCap bounds a pathological long rollout.
+  lowbag: { ...SIM_BASE, mode: 'terminal', scoreAware: 0, playoutCap: 24 },
+  // Empty bag: exact adversarial search over perfect information. movegenBudget
+  // is move generations per decision; root moves are evaluated best-first and
+  // the search keeps the best fully-evaluated move when it is hit, bounding
+  // worst-case time without a hard gate. Sized to a ~1s p99 endgame move time
+  // (measured p99 992ms at 900 vs 685ms at 600); crowded opening endgames need
+  // far more and stay capped. nodeMoves = candidate moves per inner node.
+  endgame: { static: false, movegenBudget: 900, nodeMoves: 8 },
+};
+
+// bag length -> stage key.
+function stageFor(bagLen) {
+  return bagLen === 0 ? 'endgame' : bagLen < LOWBAG_AT ? 'lowbag' : 'midgame';
+}
+
+// Headless diagnostic: when TRACE.on, findBestSimMove records override stats.
+const TRACE = {
+  on: 0,
+  gaps: [],         // static gap (best - chosen) on each override decision
+  overrides: 0,     // count of decisions where simulation overruled arm 0
+  maxGap: -1,       // largest override gap seen
+  maxPos: null,     // { gap, board, rack, bagCount, ... } for that override
+  // Most recent simulated decision (for a driver that escalates sample count
+  // until an override is statistically resolved).
+  lastOverride: null,
+  lastGap: 0,
+  lastRank: 0,      // chosen arm index (0 = static best)
+  lastZ: 0,         // paired z (mean/se) of chosen vs arm 0: override strength
+  lastNArms: 0,     // number of candidate arms considered (margin/count binding)
 };
 
 // Thrown by endgameSearch when the movegen budget is exhausted; caught by
@@ -1756,7 +1819,7 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   // both-stuck estimate here would systematically overvalue moves whose
   // reply subtree got truncated, and could pick worse than greedy — so we
   // unwind to findBestEndgameMove, which falls back to the greedy move.
-  if (budget.used >= ENDGAME.MOVEGEN_BUDGET) throw ENDGAME_ABORT;
+  if (budget.used >= STAGES.endgame.movegenBudget) throw ENDGAME_ABORT;
   const plyCap = myRack.length + oppRack.length <= 8 ? 8 : 4;
   if (ply >= plyCap) {
     // Rollouts complete even if they overshoot the budget slightly — a
@@ -1764,7 +1827,7 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
     return greedyRolloutMargin(myRack, oppRack, passes, budget);
   }
 
-  const moves = allMovesSorted(myRack, budget).slice(0, ENDGAME.NODE_MOVES);
+  const moves = allMovesSorted(myRack, budget).slice(0, STAGES.endgame.nodeMoves);
   let best = -Infinity;
   for (const m of moves) {
     const newRack = rackWithout(myRack, m.placements);
@@ -1965,74 +2028,25 @@ async function findBestStaticMove(rack) {
 }
 
 // Candidate moves for simulation, best static value first (stable sort, so
-// element 0 is exactly findBestStaticMove's choice). Returns the top k, then
-// (if SIM.CAND_MARGIN > 0) prunes the tail of moves more than CAND_MARGIN
-// points behind the best — so the arm count adapts down when a move is
-// clearly best, but never exceeds k. At least the static best is kept.
-async function collectTopCandidates(rack, k) {
+// element 0 is exactly findBestStaticMove's choice). Returns the top
+// cfg.candidates, then (if cfg.margin > 0) prunes the tail of moves more than
+// cfg.margin points behind the best — so the arm count adapts down when a move
+// is clearly best, but never exceeds the cap. At least the static best is kept.
+async function collectTopCandidates(rack, cfg) {
   const all = [];
   await scanStaticMoves(rack, (m, val) => { all.push({ m, val }); });
   all.sort((a, b) => b.val - a.val);
-  let n = Math.min(k, all.length);
-  if (SIM.CAND_MARGIN > 0 && n > 0) {
-    const cut = all[0].val - SIM.CAND_MARGIN;
+  let n = Math.min(cfg.candidates, all.length);
+  if (cfg.margin > 0 && n > 0) {
+    const cut = all[0].val - cfg.margin;
     while (n > 1 && all[n - 1].val < cut) n--; // drop moves beyond the margin
   }
   return all.slice(0, n);
 }
 
 // ============================================================
-// SIMULATION (mid-game lookahead)
+// SIMULATION (mid-game lookahead)  — config lives in STAGES, above.
 // ============================================================
-
-const SIM = {
-  CANDIDATES: 5,    // max static candidates (top-K) evaluated by simulation
-  // CAND_MARGIN prunes that top-K set: a move more than this many static
-  // move+leave points behind the best is dropped (it can't be genuinely
-  // overruled into, so simulating it only wastes reply searches and risks a
-  // noise overrule). 0 = no pruning (use the full top-CANDIDATES). Measured:
-  // across ~3800 midgame positions (bag >= 8), the deepest move a simulation
-  // could genuinely overrule the static best into sat 10 points back.
-  CAND_MARGIN: 10,
-  TRACE: 0,         // headless diagnostic: when set, records override stats
-  _gaps: [],        // static gap (best - chosen) on each override decision
-  _overrides: 0,    // count of decisions where simulation overruled arm 0
-  _maxGap: -1,      // largest override gap seen
-  _maxPos: null,    // { gap, board, rack, bagCount, ... } for that override
-  // Per-decision result of the most recent simulated decision (for a driver
-  // that escalates sample count until an override is statistically resolved).
-  _lastOverride: null, // did the last sim decision overrule arm 0?
-  _lastGap: 0,      // static gap (best - chosen) of that decision
-  _lastRank: 0,     // chosen arm index (0 = static best)
-  _lastZ: 0,        // paired z (mean/se) of chosen vs arm 0: override strength
-  _lastNArms: 0,    // number of candidate arms considered (margin/count binding)
-  SAMPLES: 30,      // sampled worlds, shared across candidates
-  CONFIDENCE: 1.5,  // paired z threshold to overrule the static choice
-  MIN_WORLDS: 6,    // worlds evaluated before pruning may trigger
-  PRUNE_EVERY: 2,   // prune check cadence (in worlds) after the minimum
-  TERMINAL_BAG: 8,  // with fewer real bag tiles than this, worlds play
-                    // out to the end of the game instead of 2 plies
-  SCORE_AWARE: 0,   // in the terminal (low-bag) band only, rank candidates by
-                    // P(win) — each playout's exact final margin combined with
-                    // the current score standing, scored win/loss — instead of
-                    // mean margin. Manages variance with a lead/deficit; off by
-                    // default (deep-bag play always maximizes equity).
-
-  // Bayesian overrule (alternative to the CONFIDENCE gate). Models the true
-  // value gap of a challenger vs the incumbent as mu ~ Normal(dStatic, tau^2)
-  // — the static move+leave gap is the prior mean, PRIOR_SD is the prior
-  // standard deviation (in points: how far the truth may sit from the static
-  // estimate) — then updates with the sampled worlds' paired differences and
-  // overrules iff the posterior probability that the challenger is better,
-  // P(mu > 0), exceeds OVERRULE_P. Unlike the frequentist gate this folds the
-  // prior and the uncertainty into one posterior; unlike a bare prior it is
-  // variance-aware, so a noisy edge cannot overrule on its mean alone. The
-  // prior naturally washes out as worlds accumulate. Off by default.
-  BAYES: 0,         // 1 enables the Bayesian decision in place of the gate
-  PRIOR_SD: 12,     // tau: prior SD (points) of the true gap around dStatic
-  OVERRULE_P: 0.9,  // posterior P(challenger better) needed to overrule
-  VAR_FLOOR: 1,     // floor on the per-world variance estimate (points^2)
-};
 
 // Standard normal CDF via a deterministic erf approximation (Abramowitz &
 // Stegun 7.1.26, |error| < 1.5e-7) — no Math.random, so mirrored matches
@@ -2054,7 +2068,7 @@ function normalCdf(z) { return 0.5 * (1 + erfApprox(z / Math.SQRT2)); }
 // out banks the opponent's rack value twice, two consecutive passes
 // strand both racks. Returns the exact final margin for the mover.
 // Board mutations are unwound before returning.
-async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize) {
+async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, playoutCap) {
   let margin = moveScore;
   const applied = [];
   let myRack = myKeptTiles.slice();
@@ -2068,7 +2082,7 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize) {
   let side = 1; // opponent moves next
   let passes = 0;
   for (let plies = 0; ; plies++) {
-    if (plies > 24) {
+    if (plies > playoutCap) {
       // Safety net (should not trigger at these bag sizes): fall back to
       // the damped leave differential.
       const scaleH = Math.min(1, bagArr.length / 7);
@@ -2204,8 +2218,8 @@ function bestExchangeKeep(rack) {
 // the sampled world — the playout prices it in the same margin units as
 // the moves, and the confidence gate means the engine only exchanges
 // when that is confidently better than the best move.
-async function findBestSimMove(rack) {
-  const cands = await collectTopCandidates(rack, SIM.CANDIDATES);
+async function findBestSimMove(rack, cfg) {
+  const cands = await collectTopCandidates(rack, cfg);
   const exchange = state.bag.length >= 7 ? bestExchangeKeep(rack) : null;
   if (cands.length === 0) {
     // No legal move: exchange beats passing whenever it is allowed.
@@ -2237,7 +2251,7 @@ async function findBestSimMove(rack) {
 
   const rng = seededRng(positionHash(rack));
   const worlds = [];
-  for (let w = 0; w < SIM.SAMPLES; w++) {
+  for (let w = 0; w < cfg.samples; w++) {
     const p = pool.slice();
     for (let i = p.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -2275,8 +2289,8 @@ async function findBestSimMove(rack) {
       const d = vals[ci][w] - vals[base][w] - mbar;
       ss += d * d;
     }
-    const s2 = Math.max(n > 1 ? ss / (n - 1) : SIM.VAR_FLOOR, SIM.VAR_FLOOR);
-    const priorPrec = 1 / (SIM.PRIOR_SD * SIM.PRIOR_SD);
+    const s2 = Math.max(n > 1 ? ss / (n - 1) : cfg.varFloor, cfg.varFloor);
+    const priorPrec = 1 / (cfg.priorSd * cfg.priorSd);
     const dataPrec = n / s2;
     const postVar = 1 / (priorPrec + dataPrec);
     const mu0 = arms[ci].staticVal - arms[base].staticVal;
@@ -2287,12 +2301,14 @@ async function findBestSimMove(rack) {
   inSimulation = true;
   const K = arms.length;
   const M = worlds.length;
-  const toTerminal = realBag.length < SIM.TERMINAL_BAG;
+  // The stage config already fixes the evaluation mode: lowbag => terminal
+  // playout, midgame => 2-ply horizon (the router picks the stage by bag).
+  const toTerminal = cfg.mode === 'terminal';
   // Score-aware terminal play ranks by P(win): the current standing (my score
   // minus the opponent's; the engine always plays the computer) plus each
   // playout's exact final margin, scored as a win/loss. Only meaningful once
   // worlds run to terminal, so it rides on toTerminal.
-  const scoreAware = toTerminal && SIM.SCORE_AWARE;
+  const scoreAware = toTerminal && cfg.scoreAware;
   const myScoreMargin = state.computerScore - state.playerScore;
   const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
@@ -2310,7 +2326,7 @@ async function findBestSimMove(rack) {
           // Near the endgame the sampled world is cheap to finish: play
           // it out and score the exact final margin — no horizon
           // heuristic, and the leave taper plays no evaluation role.
-          const margin = await simPlayoutValue(arm.score, myKept, world, oppSize);
+          const margin = await simPlayoutValue(arm.score, myKept, world, oppSize, cfg.playoutCap);
           if (arm.placements) removeFromBoard(arm.placements);
           // Score-aware: collapse the final margin to a win indicator against
           // the current standing (ties count as half a win).
@@ -2363,17 +2379,17 @@ async function findBestSimMove(rack) {
       // they can never win the final overrule gate, so stop paying for
       // their reply searches. The incumbent (candidate 0) is never pruned.
       const n = w + 1;
-      if (n >= SIM.MIN_WORLDS && n < M && (n - SIM.MIN_WORLDS) % SIM.PRUNE_EVERY === 0) {
+      if (n >= cfg.minWorlds && n < M && (n - cfg.minWorlds) % cfg.pruneEvery === 0) {
         for (let ci = 1; ci < K; ci++) {
           if (!alive[ci]) continue;
-          if (SIM.BAYES) {
+          if (cfg.bayes) {
             // Retire a challenger once it is confidently worse than the
             // incumbent: posterior P(better) below the complement of the
-            // overrule threshold — it can no longer clear OVERRULE_P.
-            if (bayesProb(vals, ci, 0, n) < 1 - SIM.OVERRULE_P) alive[ci] = false;
+            // overrule threshold — it can no longer clear overruleP.
+            if (bayesProb(vals, ci, 0, n) < 1 - cfg.overruleP) alive[ci] = false;
           } else {
             const [mean, se] = pairedStats(vals, ci, 0, n);
-            if (mean < 0 && (se === 0 || mean < -SIM.CONFIDENCE * se)) alive[ci] = false;
+            if (mean < 0 && (se === 0 || mean < -cfg.confidence * se)) alive[ci] = false;
           }
         }
       }
@@ -2392,33 +2408,33 @@ async function findBestSimMove(rack) {
   let bestIdx = 0;
   for (let ci = 1; ci < K; ci++) {
     if (!alive[ci]) continue;
-    if (SIM.BAYES) {
+    if (cfg.bayes) {
       // Overrule the incumbent only when the posterior says the challenger
-      // is better with probability > OVERRULE_P. The prior (centered on the
+      // is better with probability > overruleP. The prior (centered on the
       // static gap) and the sampled uncertainty are already folded in, so no
       // separate significance gate is needed.
-      if (bayesProb(vals, ci, bestIdx, M) > SIM.OVERRULE_P) bestIdx = ci;
+      if (bayesProb(vals, ci, bestIdx, M) > cfg.overruleP) bestIdx = ci;
     } else {
       const [mean, se] = pairedStats(vals, ci, bestIdx, M);
       if (mean <= 0) continue;
-      if (se === 0 || mean > SIM.CONFIDENCE * se) bestIdx = ci;
+      if (se === 0 || mean > cfg.confidence * se) bestIdx = ci;
     }
   }
-  if (SIM.TRACE) {
+  if (TRACE.on) {
     const override = bestIdx !== 0;
-    SIM._lastOverride = override;
-    SIM._lastRank = bestIdx;
-    SIM._lastNArms = K;
-    SIM._lastGap = override ? arms[0].staticVal - arms[bestIdx].staticVal : 0;
+    TRACE.lastOverride = override;
+    TRACE.lastRank = bestIdx;
+    TRACE.lastNArms = K;
+    TRACE.lastGap = override ? arms[0].staticVal - arms[bestIdx].staticVal : 0;
     if (override) {
       const [mean, se] = pairedStats(vals, bestIdx, 0, M);
-      SIM._lastZ = se > 0 ? mean / se : (mean > 0 ? 1e9 : 0);
-      SIM._overrides++;
-      SIM._gaps.push(SIM._lastGap);
-      if (SIM._lastGap > SIM._maxGap) {
-        SIM._maxGap = SIM._lastGap;
-        SIM._maxPos = {
-          gap: SIM._lastGap,
+      TRACE.lastZ = se > 0 ? mean / se : (mean > 0 ? 1e9 : 0);
+      TRACE.overrides++;
+      TRACE.gaps.push(TRACE.lastGap);
+      if (TRACE.lastGap > TRACE.maxGap) {
+        TRACE.maxGap = TRACE.lastGap;
+        TRACE.maxPos = {
+          gap: TRACE.lastGap,
           bestStatic: arms[0].staticVal,
           chosenStatic: arms[bestIdx].staticVal,
           chosenArm: bestIdx,
@@ -2429,7 +2445,7 @@ async function findBestSimMove(rack) {
         };
       }
     } else {
-      SIM._lastZ = 0;
+      TRACE.lastZ = 0;
     }
   }
   return armResult(arms[bestIdx]);
@@ -2441,9 +2457,13 @@ async function findBestSimMove(rack) {
 async function findBestMove(rack) {
   ensureTrie();
   ensureLeaveTables();
+  // Opponent replies inside a simulation always use fast static play,
+  // regardless of the stage config.
+  if (inSimulation) return findBestStaticMove(rack);
+  const cfg = STAGES[stageFor(state.bag.length)];
+  if (cfg.static) return findBestStaticMove(rack);
   if (state.bag.length === 0) return findBestEndgameMove(rack);
-  if (SIM.CANDIDATES > 1 && !inSimulation) return findBestSimMove(rack);
-  return findBestStaticMove(rack);
+  return findBestSimMove(rack, cfg);
 }
 
 // Generate all legal moves in one line via the trie (Appel–Jacobson):
