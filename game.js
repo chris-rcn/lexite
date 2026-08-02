@@ -1647,10 +1647,13 @@ function deriveOpponentRack(ownRack) {
 
 const ENDGAME = {
   NODE_MOVES: 8,        // candidate moves per inner search node
-  MOVEGEN_BUDGET: 600,  // move generations per decision; root moves are
+  MOVEGEN_BUDGET: 900,  // move generations per decision; root moves are
                         // evaluated best-first and the search keeps the
                         // best fully-evaluated move when this is hit, so
-                        // this bounds worst-case time without a hard gate
+                        // this bounds worst-case time without a hard gate.
+                        // Sized to a ~1s p99 endgame move time (measured
+                        // p99 992ms at 900 vs 685ms at 600); the crowded
+                        // opening endgames need far more and stay capped.
 };
 
 // Thrown by endgameSearch when the movegen budget is exhausted; caught by
