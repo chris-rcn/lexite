@@ -2012,6 +2012,11 @@ const SIM = {
   PRUNE_EVERY: 2,   // prune check cadence (in worlds) after the minimum
   TERMINAL_BAG: 8,  // with fewer real bag tiles than this, worlds play
                     // out to the end of the game instead of 2 plies
+  SCORE_AWARE: 0,   // in the terminal (low-bag) band only, rank candidates by
+                    // P(win) — each playout's exact final margin combined with
+                    // the current score standing, scored win/loss — instead of
+                    // mean margin. Manages variance with a lead/deficit; off by
+                    // default (deep-bag play always maximizes equity).
 
   // Bayesian overrule (alternative to the CONFIDENCE gate). Models the true
   // value gap of a challenger vs the incumbent as mu ~ Normal(dStatic, tau^2)
@@ -2283,6 +2288,12 @@ async function findBestSimMove(rack) {
   const K = arms.length;
   const M = worlds.length;
   const toTerminal = realBag.length < SIM.TERMINAL_BAG;
+  // Score-aware terminal play ranks by P(win): the current standing (my score
+  // minus the opponent's; the engine always plays the computer) plus each
+  // playout's exact final margin, scored as a win/loss. Only meaningful once
+  // worlds run to terminal, so it rides on toTerminal.
+  const scoreAware = toTerminal && SIM.SCORE_AWARE;
+  const myScoreMargin = state.computerScore - state.playerScore;
   const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
   try {
@@ -2299,8 +2310,16 @@ async function findBestSimMove(rack) {
           // Near the endgame the sampled world is cheap to finish: play
           // it out and score the exact final margin — no horizon
           // heuristic, and the leave taper plays no evaluation role.
-          vals[ci].push(await simPlayoutValue(arm.score, myKept, world, oppSize));
+          const margin = await simPlayoutValue(arm.score, myKept, world, oppSize);
           if (arm.placements) removeFromBoard(arm.placements);
+          // Score-aware: collapse the final margin to a win indicator against
+          // the current standing (ties count as half a win).
+          if (scoreAware) {
+            const final = myScoreMargin + margin;
+            vals[ci].push(final > 0 ? 1 : final < 0 ? 0 : 0.5);
+          } else {
+            vals[ci].push(margin);
+          }
           continue;
         }
         const oppRack = world.slice(0, oppSize);

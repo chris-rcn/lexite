@@ -177,6 +177,9 @@ function loadEngine(file, words, opts = {}) {
       state.isFirstMove = pos.isFirstMove;
       // Only the bag's length is read (leave-value damping)
       state.bag = new Array(pos.bagCount || 0).fill('?');
+      // Current standing for score-aware sim ("me" is always the computer).
+      state.computerScore = pos.myScore || 0;
+      state.playerScore = pos.oppScore || 0;
       if (typeof findBestMove === 'function') return findBestMove(pos.rack);
       // Pre-refactor engine API
       state.computerRack = pos.rack;
@@ -198,12 +201,14 @@ function loadEngine(file, words, opts = {}) {
     // vm membrane). Returns whatever the code evaluates to.
     evalInRealm(code) { return vm.runInContext(code, sandbox); },
     _sandbox: sandbox,
-    async bestMove(board, rack, isFirstMove, bagCount) {
+    async bestMove(board, rack, isFirstMove, bagCount, myScore, oppScore) {
       const positionJson = JSON.stringify({
         board,
         rack: rack.map(t => ({ letter: t.letter, isBlank: t.isBlank })),
         isFirstMove,
         bagCount,
+        myScore: myScore || 0,
+        oppScore: oppScore || 0,
       });
       const t0 = Date.now();
       const move = await sandbox.__bestMove(positionJson);
@@ -247,7 +252,7 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
 
   for (;;) {
     if (onPosition) onPosition(board, bag, isFirstMove, racks[seat]);
-    const move = await engines[seat].bestMove(board, racks[seat], isFirstMove, bag.length);
+    const move = await engines[seat].bestMove(board, racks[seat], isFirstMove, bag.length, scores[seat], scores[1 - seat]);
     moves++;
     if (!move) {
       if (onTurn) onTurn(seat, 'pass', 0, null);
