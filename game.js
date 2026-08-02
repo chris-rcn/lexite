@@ -1686,12 +1686,14 @@ const STAGES = {
   // Deep bag: value each world by a 2-ply horizon (score + leave differential).
   midgame: { ...SIM_BASE, mode: 'horizon' },
   // Near the end: worlds are cheap to finish, so play each out to the exact
-  // final margin. scoreAware ranks by P(win) against the current standing
-  // instead of mean margin. movegenBudget bounds the total move generations
-  // per decision (0 = unlimited) — the playouts share it and truncate to the
-  // leave estimate once spent, so the tail latency stays bounded even when a
-  // sampled game runs long.
-  lowbag: { ...SIM_BASE, mode: 'terminal', scoreAware: 0, movegenBudget: 0 },
+  // final margin. Fewer samples than midgame — the playouts are exact, so they
+  // need little averaging; measured indistinguishable from 30 samples in play
+  // strength (~50% head-to-head) while roughly halving the low-bag move-time
+  // tail. scoreAware ranks by P(win) against the current standing instead of
+  // mean margin. movegenBudget bounds the total move generations per decision
+  // (0 = unlimited) — the playouts share it and truncate to the leave estimate
+  // once spent, keeping the tail bounded even when a sampled game runs long.
+  lowbag: { ...SIM_BASE, mode: 'terminal', samples: 10, scoreAware: 0, movegenBudget: 0 },
   // Empty bag: exact adversarial search over perfect information. movegenBudget
   // is move generations per decision; root moves are evaluated best-first and
   // the search keeps the best fully-evaluated move when it is hit, bounding
