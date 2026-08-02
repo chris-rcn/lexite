@@ -1783,6 +1783,32 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   return Math.max(best, passVal);
 }
 
+// Static endgame value of a single play, consistent with the search's own
+// terminal rules: going out banks twice the opponent's rack (endGame credits
+// it to the finisher and deducts it from the opponent), otherwise the kept
+// tiles are dead weight deducted from your score at game end. The opponent's
+// rack is constant across the move choice, so its value only matters in the
+// go-out branch. Used to choose the greedy fallback move when the budget is
+// exhausted before any root move is fully searched — ranking by this rather
+// than raw score prices the leftover rack the aborted search never got to.
+function endgameStaticValue(move, leave, oppRack) {
+  if (leave.length === 0) return move.score + 2 * rackValueOf(oppRack);
+  return move.score - rackValueOf(leave);
+}
+
+// The greedy fallback: the positive-scoring play with the best static
+// endgame value, or null (pass) if there is none. Computed only on budget
+// abort, so the per-move rackWithout stays off the common path.
+function greedyEndgameMove(rack, moves, oppRack) {
+  let best = null, bestVal = -Infinity;
+  for (const m of moves) {
+    if (m.score <= 0) continue;
+    const v = endgameStaticValue(m, rackWithout(rack, m.placements), oppRack);
+    if (v > bestVal) { bestVal = v; best = m; }
+  }
+  return best;
+}
+
 // Pick the endgame move by search rather than greedy score. Root moves
 // are evaluated best-first (by score), each with a complete bounded reply
 // search. When the budget runs out mid-move, the incomplete move is
@@ -1796,7 +1822,6 @@ async function findBestEndgameMove(rack) {
   const budget = { used: 0 };
   const moves = allMovesSorted(rack, budget);
   if (moves.length === 0) return null;
-  const greedy = moves[0].score > 0 ? moves[0] : null;
 
   // The reply search mutates the board and unwinds un-cleanly if it
   // aborts, so snapshot to restore the discarded move's placements.
@@ -1821,9 +1846,9 @@ async function findBestEndgameMove(rack) {
         // Budget exhausted evaluating this move — discard it, keep the
         // best fully-evaluated move so far (>= greedy, since the top-score
         // move was evaluated first). If even the first move did not
-        // finish, fall back to the greedy move.
+        // finish, fall back to the best static-endgame-value move.
         state.board = boardSnapshot;
-        return bestMove !== null ? bestMove : greedy;
+        return bestMove !== null ? bestMove : greedyEndgameMove(rack, moves, oppRack);
       }
       removeFromBoard(m.placements);
     }
