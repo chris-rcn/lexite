@@ -1720,6 +1720,7 @@ const TRACE = {
   lastRank: 0,      // chosen arm index (0 = static best)
   lastZ: 0,         // paired z (mean/se) of chosen vs arm 0: override strength
   lastNArms: 0,     // number of candidate arms considered (margin/count binding)
+  lastNodes: 0,     // move generations the last terminal decision spent
 };
 
 // Thrown by endgameSearch when the movegen budget is exhausted; caught by
@@ -2416,6 +2417,7 @@ async function findBestSimMove(rack, cfg) {
   } finally {
     inSimulation = false;
     state.bag = realBag;
+    TRACE.lastNodes = playoutBudget.used; // move generations this decision spent (terminal only)
   }
 
   // The static choice (candidate 0) stays unless a surviving challenger
