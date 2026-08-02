@@ -1687,8 +1687,11 @@ const STAGES = {
   midgame: { ...SIM_BASE, mode: 'horizon' },
   // Near the end: worlds are cheap to finish, so play each out to the exact
   // final margin. scoreAware ranks by P(win) against the current standing
-  // instead of mean margin; playoutCap bounds a pathological long rollout.
-  lowbag: { ...SIM_BASE, mode: 'terminal', scoreAware: 0, playoutCap: 24 },
+  // instead of mean margin. movegenBudget bounds the total move generations
+  // per decision (0 = unlimited) — the playouts share it and truncate to the
+  // leave estimate once spent, so the tail latency stays bounded even when a
+  // sampled game runs long.
+  lowbag: { ...SIM_BASE, mode: 'terminal', scoreAware: 0, movegenBudget: 0 },
   // Empty bag: exact adversarial search over perfect information. movegenBudget
   // is move generations per decision; root moves are evaluated best-first and
   // the search keeps the best fully-evaluated move when it is hit, bounding
@@ -2068,7 +2071,18 @@ function normalCdf(z) { return 0.5 * (1 + erfApprox(z / Math.SQRT2)); }
 // out banks the opponent's rack value twice, two consecutive passes
 // strand both racks. Returns the exact final margin for the mover.
 // Board mutations are unwound before returning.
-async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, playoutCap) {
+// Hard ply guard: a single playout cannot run longer than this many plies
+// (a pathological board where neither side terminates). The real cost lever
+// is the shared node budget below; this is just an infinite-loop backstop.
+const PLAYOUT_PLY_GUARD = 24;
+
+// budget is a shared {used} counter for the whole decision (all worlds and
+// candidates); each playout charges one node per move generation. When the
+// decision's node budget (budgetCap, 0 = unlimited) is exhausted, playouts
+// truncate to the damped leave differential — cheaply — so total decision
+// cost is bounded at ~budgetCap move generations regardless of how long
+// individual playouts would have run.
+async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, budget, budgetCap) {
   let margin = moveScore;
   const applied = [];
   let myRack = myKeptTiles.slice();
@@ -2082,9 +2096,9 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, playoutCa
   let side = 1; // opponent moves next
   let passes = 0;
   for (let plies = 0; ; plies++) {
-    if (plies > playoutCap) {
-      // Safety net (should not trigger at these bag sizes): fall back to
-      // the damped leave differential.
+    if (plies > PLAYOUT_PLY_GUARD || (budgetCap > 0 && budget.used >= budgetCap)) {
+      // Truncated (ply guard or node budget): fall back to the damped leave
+      // differential rather than keep playing.
       const scaleH = Math.min(1, bagArr.length / 7);
       margin += scaleH *
         (leaveValueFromCounts(tileCounts(myRack)) - leaveValueFromCounts(tileCounts(oppRack)));
@@ -2092,6 +2106,7 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, playoutCa
     }
     state.bag = bagArr; // consumers only read its length
     const mover = side === 1 ? oppRack : myRack;
+    budget.used++; // charge one node per move generation
     const mv = await findBestStaticMove(mover);
     if (!mv) {
       if (++passes >= 2) {
@@ -2310,6 +2325,10 @@ async function findBestSimMove(rack, cfg) {
   // worlds run to terminal, so it rides on toTerminal.
   const scoreAware = toTerminal && cfg.scoreAware;
   const myScoreMargin = state.computerScore - state.playerScore;
+  // Shared node budget across the whole terminal decision (all worlds and
+  // candidates); simPlayoutValue charges one node per move generation and
+  // truncates once cfg.movegenBudget is spent (0 = unlimited).
+  const playoutBudget = { used: 0 };
   const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
   try {
@@ -2326,7 +2345,7 @@ async function findBestSimMove(rack, cfg) {
           // Near the endgame the sampled world is cheap to finish: play
           // it out and score the exact final margin — no horizon
           // heuristic, and the leave taper plays no evaluation role.
-          const margin = await simPlayoutValue(arm.score, myKept, world, oppSize, cfg.playoutCap);
+          const margin = await simPlayoutValue(arm.score, myKept, world, oppSize, playoutBudget, cfg.movegenBudget);
           if (arm.placements) removeFromBoard(arm.placements);
           // Score-aware: collapse the final margin to a win indicator against
           // the current standing (ties count as half a win).
