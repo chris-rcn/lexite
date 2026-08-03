@@ -2477,6 +2477,79 @@ async function findBestSimMove(rack, cfg) {
 // Find the best legal move for the given rack. With an empty bag this is
 // the adversarial endgame search; otherwise simulation picks among the
 // top static candidates (static play inside simulated replies).
+// Every size-k index subset of [0, n). n is small (unseen pool, <= ~9).
+function indexSubsets(n, k) {
+  const out = [];
+  const rec = (start, chosen) => {
+    if (chosen.length === k) { out.push(chosen.slice()); return; }
+    for (let i = start; i < n; i++) { chosen.push(i); rec(i + 1, chosen); chosen.pop(); }
+  };
+  rec(0, []);
+  return out;
+}
+
+// Exact solver-based pre-endgame policy. When the bag holds only a tile or two
+// the unseen pool (opponent rack + bag) is small and known up to which tiles
+// are in the bag, so we enumerate every such split exactly rather than sample:
+// for each candidate move, play it, deal the drawn bag tiles, and score the
+// resulting empty-bag position with the exact endgame solver; the move with the
+// best probability-weighted final margin wins. Deterministic. Only candidates
+// whose refill empties the bag (or that go out) are scored exactly — at bag 2 a
+// one-tile play would leave the bag non-empty (a recursive pre-endgame) and is
+// skipped. cfg.candidates/margin bound the candidate set; cfg.preendBudget caps
+// each endgame solve (a candidate whose solve overruns is skipped).
+async function findBestPreEndgameMove(rack, cfg) {
+  const bagSize = state.bag.length;
+  const pool = deriveOpponentRack(rack); // unseen: opponent rack + bag tiles
+  const oppSize = pool.length - bagSize;
+  if (bagSize < 1 || oppSize < 0) return findBestStaticMove(rack);
+  const cands = await collectTopCandidates(rack, cfg);
+  if (cands.length === 0) return null;
+  const subsets = indexSubsets(pool.length, bagSize); // which pool tiles are the bag
+  const wgt = 1 / subsets.length;
+  const boardSnap = state.board.map(r => r.slice());
+  const savedBudget = STAGES.endgame.movegenBudget;
+  STAGES.endgame.movegenBudget = cfg.preendBudget;
+  const budget = { used: 0 };
+  let best = null, bestEv = -Infinity;
+  try {
+    for (const c of cands) {
+      const leave = rackWithout(rack, c.m.placements);
+      const draw = Math.min(7 - leave.length, bagSize);
+      if (leave.length > 0 && draw < bagSize) continue; // refill leaves bag non-empty
+      await yieldToUI();
+      applyToBoard(c.m.placements);
+      let ev = 0, ok = true;
+      for (const sub of subsets) {
+        const inBag = new Array(pool.length).fill(false);
+        for (const i of sub) inBag[i] = true;
+        const oppRack = pool.filter((_, k) => !inBag[k]);
+        let v;
+        if (leave.length === 0) {
+          v = c.m.score + 2 * rackValueOf(oppRack); // went out on the move itself
+        } else {
+          const myRack = leave.concat(sub.map(i => pool[i])); // drew the bag tiles
+          budget.used = 0;
+          try {
+            v = c.m.score - endgameSearch(oppRack, myRack, 0, 1, -Infinity, Infinity, budget);
+          } catch (e) {
+            if (e !== ENDGAME_ABORT) throw e;
+            state.board = boardSnap; ok = false; break; // solve overran the cap
+          }
+        }
+        ev += v;
+      }
+      removeFromBoard(c.m.placements);
+      if (!ok) continue;
+      ev *= wgt;
+      if (ev > bestEv) { bestEv = ev; best = c.m; }
+    }
+  } finally {
+    STAGES.endgame.movegenBudget = savedBudget;
+  }
+  return best !== null ? best : findBestStaticMove(rack);
+}
+
 async function findBestMove(rack) {
   ensureTrie();
   ensureLeaveTables();
@@ -2486,6 +2559,7 @@ async function findBestMove(rack) {
   const cfg = STAGES[stageFor(state.bag.length)];
   if (cfg.static) return findBestStaticMove(rack);
   if (state.bag.length === 0) return findBestEndgameMove(rack);
+  if (cfg.mode === 'solver') return findBestPreEndgameMove(rack, cfg);
   return findBestSimMove(rack, cfg);
 }
 
