@@ -255,10 +255,11 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
   let reason;
   // Score margin (seat0 - seat1) at the moment each late phase begins, so a
   // caller can condition on how close the game was entering that phase.
-  let marginLowbag = null, marginEndgame = null;
+  let marginLowbag = null, marginBag1 = null, marginEndgame = null;
 
   for (;;) {
     if (marginLowbag === null && bag.length < 8) marginLowbag = scores[0] - scores[1];
+    if (marginBag1 === null && bag.length === 1) marginBag1 = scores[0] - scores[1];
     if (marginEndgame === null && bag.length === 0) marginEndgame = scores[0] - scores[1];
     if (onPosition) onPosition(board, bag, isFirstMove, racks[seat]);
     const move = await engines[seat].bestMove(board, racks[seat], isFirstMove, bag.length, scores[seat], scores[1 - seat]);
@@ -319,7 +320,7 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
     scores[1] -= rackValue(racks[1]);
   }
 
-  return { scores, moves, reason, marginLowbag, marginEndgame };
+  return { scores, moves, reason, marginLowbag, marginBag1, marginEndgame };
 }
 
 // Play one game (spec = {a, b, swap, bag}) in this process and return a

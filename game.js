@@ -1656,7 +1656,7 @@ function deriveOpponentRack(ownRack) {
 // `static: true` on any stage skips its lookahead and plays the static move
 // generator there. The two simulation stages share SIM_BASE and override only
 // what differs, so shared knobs stay in one place.
-const LOWBAG_AT = 8;
+let LOWBAG_AT = 8; // tunable: bag < this (and > 0) is the lowbag stage
 
 const SIM_BASE = {
   static: false,
