@@ -256,8 +256,12 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
   // Score margin (seat0 - seat1) at the moment each late phase begins, so a
   // caller can condition on how close the game was entering that phase.
   let marginLowbag = null, marginBag1 = null, marginEndgame = null;
+  // marginAtBag[k] = score margin (seat0 - seat1) the first time the bag holds
+  // exactly k tiles (k <= 8), so a caller can isolate/filter on any late bag size.
+  const marginAtBag = {};
 
   for (;;) {
+    if (bag.length <= 8 && marginAtBag[bag.length] === undefined) marginAtBag[bag.length] = scores[0] - scores[1];
     if (marginLowbag === null && bag.length < 8) marginLowbag = scores[0] - scores[1];
     if (marginBag1 === null && bag.length === 1) marginBag1 = scores[0] - scores[1];
     if (marginEndgame === null && bag.length === 0) marginEndgame = scores[0] - scores[1];
@@ -320,7 +324,7 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
     scores[1] -= rackValue(racks[1]);
   }
 
-  return { scores, moves, reason, marginLowbag, marginBag1, marginEndgame };
+  return { scores, moves, reason, marginLowbag, marginBag1, marginEndgame, marginAtBag };
 }
 
 // Play one game (spec = {a, b, swap, bag}) in this process and return a
