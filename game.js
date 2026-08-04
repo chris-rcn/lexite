@@ -1685,14 +1685,25 @@ const SIM_BASE = {
 const STAGES = {
   // Deep bag: value each world by a 2-ply horizon (score + leave differential).
   midgame: { ...SIM_BASE, mode: 'horizon' },
-  // Near the end: play static. Measured — no form of low-bag simulation beats
-  // static over 2000-game head-to-head A/Bs (terminal playout weak s10/c3 50.6%
-  // and strong s30/c8 50.9%, and 2-ply horizon 49.6% — all within noise of
-  // 50%). The exact endgame solver at bag 0 is the decisive phase, and static
-  // low-bag play reaches an equivalent bag-0 position, so simulating bag 1..7
-  // buys nothing while costing a multi-second move-time tail. The sim config
-  // stays below as dormant knobs (the tuned values if the sim is revisited);
-  // set static:false to re-enable the terminal sim.
+  // One tile in the bag: near-perfect information. The unseen pool splits into
+  // only ~8 (opponent rack | bag) worlds, so we enumerate them all exactly
+  // (enumerate:true) rather than sample — each candidate's mean over the 8
+  // equally-likely worlds is its exact expected value under the rollout, with
+  // no sampling variance and no confidence gate needed (confidence 0 = pick the
+  // argmax). Measured over 518 exact bag=1 solves: mean regret vs the endgame
+  // solver 1.82 pts (static 4.65), 64% optimal (static 48%), p99 move time
+  // ~1.1s — the quality ceiling reachable under ~1s with a greedy rollout
+  // (closing the last ~1.8 pts needs the exact solver at 15-43s/move).
+  preendgame: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 8, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  // Two-to-seven tiles in the bag: play static. Measured — no form of low-bag
+  // simulation beats static over 2000-game head-to-head A/Bs (terminal playout
+  // weak s10/c3 50.6% and strong s30/c8 50.9%, and 2-ply horizon 49.6% — all
+  // within noise of 50%). The exact endgame solver at bag 0 is the decisive
+  // phase, and static low-bag play reaches an equivalent bag-0 position, so
+  // simulating bag 2..7 buys nothing while costing a multi-second move-time
+  // tail. (bag 1 is the exception handled by preendgame above, where exact
+  // enumeration makes the value reachable within budget.) The sim config stays
+  // as dormant knobs; set static:false to re-enable the terminal sim.
   lowbag: { ...SIM_BASE, static: true, mode: 'terminal', samples: 10, candidates: 3, scoreAware: 0, movegenBudget: 0 },
   // Empty bag: exact adversarial search over perfect information. movegenBudget
   // is move generations per decision; root moves are evaluated best-first and
@@ -1705,7 +1716,10 @@ const STAGES = {
 
 // bag length -> stage key.
 function stageFor(bagLen) {
-  return bagLen === 0 ? 'endgame' : bagLen < LOWBAG_AT ? 'lowbag' : 'midgame';
+  return bagLen === 0 ? 'endgame'
+    : bagLen === 1 ? 'preendgame'
+    : bagLen < LOWBAG_AT ? 'lowbag'
+    : 'midgame';
 }
 
 // Headless diagnostic: when TRACE.on, findBestSimMove records override stats.

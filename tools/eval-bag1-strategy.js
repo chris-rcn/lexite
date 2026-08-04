@@ -33,28 +33,30 @@ const rackArr = s => [...s].map(ch => ({ letter: ch === '?' ? '' : ch, isBlank: 
 
 const coll = JSON.parse(fs.readFileSync(COLL, 'utf8'));
 const E = m.loadEngine(ENGINE, words, {});
-let setup = `LOWBAG_AT = 2; STAGES.midgame.static = true; ensureTrie(); ensureLeaveTables();
+// A bag=1 position routes to the 'preendgame' stage, so every spec configures
+// that stage. Start from a clean baseline (enumeration and Bayes off) so the
+// stage's production defaults don't leak into the sampling specs.
+let setup = `ensureTrie(); ensureLeaveTables();
+  STAGES.preendgame.enumerate = false; STAGES.preendgame.bayes = 0; STAGES.preendgame.confidence = 0;
   globalThis.__moveKey = (pl) => pl.map(p => p.row + ',' + p.col + ',' + (p.isBlank ? '?' : p.letter.toUpperCase())).sort().join('|');`;
-if (SPEC === 'static') setup += `STAGES.lowbag.static = true;`;
+if (SPEC === 'static') setup += `STAGES.preendgame.static = true;`;
 else if (SPEC.startsWith('simt:')) { const [, S, C, B] = SPEC.split(':');
-  setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
-    STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.confidence = 0;
-    STAGES.lowbag.movegenBudget = ${+B};`; }
+  setup += `STAGES.preendgame.static = false; STAGES.preendgame.mode = 'terminal'; STAGES.preendgame.samples = ${+S};
+    STAGES.preendgame.candidates = ${+C}; STAGES.preendgame.margin = 0; STAGES.preendgame.movegenBudget = ${+B};`; }
 else if (SPEC.startsWith('enum:')) { const [, C] = SPEC.split(':');
-  setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.enumerate = true;
-    STAGES.lowbag.samples = 4096; STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0;
-    STAGES.lowbag.confidence = 0; STAGES.lowbag.movegenBudget = 0;`; }
+  setup += `STAGES.preendgame.static = false; STAGES.preendgame.mode = 'terminal'; STAGES.preendgame.enumerate = true;
+    STAGES.preendgame.samples = 4096; STAGES.preendgame.candidates = ${+C}; STAGES.preendgame.margin = 0;
+    STAGES.preendgame.movegenBudget = 0;`; }
 else if (SPEC.startsWith('simb:')) { const [, S, C, P] = SPEC.split(':');
-  setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
-    STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.movegenBudget = 0;
-    STAGES.lowbag.bayes = 1; STAGES.lowbag.priorSd = ${+P}; STAGES.lowbag.overruleP = 0.5;`; }
+  setup += `STAGES.preendgame.static = false; STAGES.preendgame.mode = 'terminal'; STAGES.preendgame.samples = ${+S};
+    STAGES.preendgame.candidates = ${+C}; STAGES.preendgame.margin = 0; STAGES.preendgame.movegenBudget = 0;
+    STAGES.preendgame.bayes = 1; STAGES.preendgame.priorSd = ${+P}; STAGES.preendgame.overruleP = 0.5;`; }
 else if (SPEC.startsWith('sim:')) { const [, S, C] = SPEC.split(':');
-  setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
-    STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.confidence = 0;
-    STAGES.lowbag.movegenBudget = 0;`; }
+  setup += `STAGES.preendgame.static = false; STAGES.preendgame.mode = 'terminal'; STAGES.preendgame.samples = ${+S};
+    STAGES.preendgame.candidates = ${+C}; STAGES.preendgame.margin = 0; STAGES.preendgame.movegenBudget = 0;`; }
 else if (SPEC.startsWith('solver:')) { const [, C, B] = SPEC.split(':');
-  setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'solver'; STAGES.lowbag.candidates = ${+C};
-    STAGES.lowbag.margin = 0; STAGES.lowbag.preendBudget = ${+B};`; }
+  setup += `STAGES.preendgame.static = false; STAGES.preendgame.mode = 'solver'; STAGES.preendgame.candidates = ${+C};
+    STAGES.preendgame.margin = 0; STAGES.preendgame.preendBudget = ${+B};`; }
 else throw new Error('unknown spec: ' + SPEC);
 E.evalInRealm(setup);
 E.evalInRealm(`globalThis.__pick = async function(boardJson, rackJson){
