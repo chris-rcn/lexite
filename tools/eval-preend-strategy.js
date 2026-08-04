@@ -8,6 +8,7 @@
 //   static        static move generator
 //   enum:C        exact world enumeration (no sampling), C candidates
 //   sim:S:C       terminal sim, S sampled worlds, C candidates, margin 0, gate 0
+//   simp:S:C:M    like sim, but pruning starts after M worlds (M>=S = no pruning)
 //   simb:S:C:P    Bayesian sim: static-anchored prior, priorSd P (small=strong)
 //   simt:S:C:B    truncated terminal sim, node budget B per decision
 //   solver:C:B    exact solver pre-endgame, C candidates, per-solve budget B
@@ -54,6 +55,10 @@ else if (SPEC.startsWith('simb:')) { const [, S, C, P] = SPEC.split(':');
   setup += `STAGES.${STG}.static = false; STAGES.${STG}.mode = 'terminal'; STAGES.${STG}.samples = ${+S};
     STAGES.${STG}.candidates = ${+C}; STAGES.${STG}.margin = 0; STAGES.${STG}.movegenBudget = 0;
     STAGES.${STG}.bayes = 1; STAGES.${STG}.priorSd = ${+P}; STAGES.${STG}.overruleP = 0.5;`; }
+else if (SPEC.startsWith('simp:')) { const [, S, C, M] = SPEC.split(':');
+  setup += `STAGES.${STG}.static = false; STAGES.${STG}.mode = 'terminal'; STAGES.${STG}.samples = ${+S};
+    STAGES.${STG}.candidates = ${+C}; STAGES.${STG}.margin = 0; STAGES.${STG}.movegenBudget = 0;
+    STAGES.${STG}.minWorlds = ${+M};`; } // pruning starts after M worlds (M>=S disables it)
 else if (SPEC.startsWith('sim:')) { const [, S, C] = SPEC.split(':');
   setup += `STAGES.${STG}.static = false; STAGES.${STG}.mode = 'terminal'; STAGES.${STG}.samples = ${+S};
     STAGES.${STG}.candidates = ${+C}; STAGES.${STG}.margin = 0; STAGES.${STG}.movegenBudget = 0;`; }
