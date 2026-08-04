@@ -24,6 +24,11 @@ const SEEDS = parseInt(process.argv[3] || '20000', 10);
 const BASE_SEED = parseInt(process.argv[4] || '1500000', 10);
 const K = parseInt(process.argv[5] || '6', 10);
 const BAG = parseInt(process.argv[6] || '3', 10);
+// Cap on worlds evaluated per candidate. When the full split count C(pool,BAG)
+// exceeds this, take a seeded uniform subsample instead of enumerating all —
+// trading a low-noise exact-over-worlds oracle for a bounded per-position cost.
+// 0 = enumerate all (exact over the world distribution).
+const MAXW = parseInt(process.argv[7] || '0', 10);
 
 function encodeBoard(board) {
   let s = '';
@@ -40,7 +45,7 @@ P.evalInRealm('STAGES.bag0.static = true;'); // fast position generation
 const Q = m.loadEngine(ENGINE, words, {});
 Q.evalInRealm(`
   ensureTrie(); ensureLeaveTables();
-  const BAG = ${BAG};
+  const BAG = ${BAG}, MAXW = ${MAXW};
   globalThis.__moveKey = (pl) => pl.map(p => p.row + ',' + p.col + ',' + (p.isBlank ? '?' : p.letter.toUpperCase())).sort().join('|');
   // Approximate-oracle value of every top-K candidate: greedy rollout averaged
   // over the full enumeration of (opponent rack | bag) splits.
@@ -52,7 +57,12 @@ Q.evalInRealm(`
     if (oppSize < 0 || pool.length < BAG) return JSON.stringify({ skip: 1 });
     const cands = await collectTopCandidates(rack, { candidates: ${K}, margin: 0 });
     if (cands.length < 2) return JSON.stringify({ skip: 1 });
-    const subsets = indexSubsets(pool.length, BAG);   // which BAG pool tiles are the bag
+    let subsets = indexSubsets(pool.length, BAG);     // which BAG pool tiles are the bag
+    if (MAXW > 0 && subsets.length > MAXW) {           // seeded uniform subsample to bound effort
+      const rng = seededRng(pool.length * 2654435761 + subsets.length);
+      for (let i = subsets.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const t = subsets[i]; subsets[i] = subsets[j]; subsets[j] = t; }
+      subsets = subsets.slice(0, MAXW);
+    }
     const wgt = 1 / subsets.length;
     // Enumerated worlds: opponent rack, then bag draw order (canonical pool order).
     const worlds = subsets.map(sub => {
@@ -80,7 +90,7 @@ Q.evalInRealm(`
 `);
 
 let coll = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, 'utf8'))
-  : { meta: { bagSize: BAG, candidates: K, oracle: 'greedy-enum', baseSeed: BASE_SEED }, scanned: 0, entries: [] };
+  : { meta: { bagSize: BAG, candidates: K, oracle: MAXW > 0 ? 'greedy-sample' : 'greedy-enum', worldsCap: MAXW, baseSeed: BASE_SEED }, scanned: 0, entries: [] };
 function save() { fs.writeFileSync(OUT + '.tmp', JSON.stringify(coll)); fs.renameSync(OUT + '.tmp', OUT); }
 
 (async () => {
