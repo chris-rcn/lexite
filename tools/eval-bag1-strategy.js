@@ -5,6 +5,7 @@
 // candidates). Strategy specs:
 //   static        static move generator
 //   sim:S:C       terminal simulation, S samples, C candidates, margin 0, gate 0
+//   simt:S:C:B    truncated terminal sim, node budget B per decision (0=unlimited)
 //   solver:C:B    exact solver pre-endgame, C candidates, per-solve budget B
 //
 //   node tools/eval-bag1-strategy.js [collection.json] [spec]
@@ -33,9 +34,14 @@ const E = m.loadEngine(ENGINE, words, {});
 let setup = `LOWBAG_AT = 2; STAGES.midgame.static = true; ensureTrie(); ensureLeaveTables();
   globalThis.__moveKey = (pl) => pl.map(p => p.row + ',' + p.col + ',' + (p.isBlank ? '?' : p.letter.toUpperCase())).sort().join('|');`;
 if (SPEC === 'static') setup += `STAGES.lowbag.static = true;`;
+else if (SPEC.startsWith('simt:')) { const [, S, C, B] = SPEC.split(':');
+  setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
+    STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.confidence = 0;
+    STAGES.lowbag.movegenBudget = ${+B};`; }
 else if (SPEC.startsWith('sim:')) { const [, S, C] = SPEC.split(':');
   setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
-    STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.confidence = 0;`; }
+    STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.confidence = 0;
+    STAGES.lowbag.movegenBudget = 0;`; }
 else if (SPEC.startsWith('solver:')) { const [, C, B] = SPEC.split(':');
   setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'solver'; STAGES.lowbag.candidates = ${+C};
     STAGES.lowbag.margin = 0; STAGES.lowbag.preendBudget = ${+B};`; }
