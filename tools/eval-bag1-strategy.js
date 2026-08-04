@@ -55,12 +55,16 @@ E.evalInRealm(`globalThis.__pick = async function(boardJson, rackJson){
 };`);
 
 (async () => {
-  let n = 0, sumReg = 0, optimal = 0, off = 0;
+  let n = 0, sumReg = 0, optimal = 0, off = 0, sumMs = 0;
+  const times = [];
   for (const e of coll.entries) {
     const best = Math.max(...e.m.map(r => r.ex));
     const boardJson = JSON.stringify(decodeBoard(e.b));
     const rackJson = JSON.stringify(rackArr(e.r).map(t => ({ letter: t.letter, isBlank: t.isBlank })));
+    const t0 = process.hrtime.bigint();
     const key = await E.evalInRealm(`__pick(${JSON.stringify(boardJson)}, ${JSON.stringify(rackJson)})`);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    sumMs += ms; times.push(ms);
     const hit = e.m.find(r => r.k === key);
     n++;
     if (!hit) { off++; continue; }
@@ -68,6 +72,9 @@ E.evalInRealm(`globalThis.__pick = async function(boardJson, rackJson){
     if (best - hit.ex < 1e-6) optimal++;
   }
   const scored = n - off;
+  times.sort((a, b) => a - b);
+  const q = p => times[Math.floor(p * (times.length - 1))];
   console.log(`strategy ${SPEC} | positions ${n} | scored ${scored} off-benchmark ${off}`);
   console.log(`mean regret ${(sumReg / Math.max(1, scored)).toFixed(2)} pts | optimal ${(100 * optimal / Math.max(1, scored)).toFixed(0)}%`);
+  console.log(`decision time: mean ${(sumMs / n).toFixed(1)} ms | p50 ${q(.5).toFixed(1)} | p90 ${q(.9).toFixed(1)} | max ${q(1).toFixed(1)} | total ${(sumMs / 1000).toFixed(1)} s`);
 })();
