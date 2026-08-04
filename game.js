@@ -1682,44 +1682,58 @@ const SIM_BASE = {
   varFloor: 1,      // floor on the per-world variance estimate (points^2)
 };
 
+// Move-selection policy keyed by bag state — how many tiles remain in the bag —
+// rather than by stage names. Each key names the bag counts it governs; stageFor
+// maps a bag count to its key. Boundaries: bag3to7 spans 3..LOWBAG_AT-1 and
+// bagGt7 is LOWBAG_AT+ (LOWBAG_AT defaults to 8).
 const STAGES = {
-  // Deep bag: value each world by a 2-ply horizon (score + leave differential).
-  midgame: { ...SIM_BASE, mode: 'horizon' },
-  // One tile in the bag: near-perfect information. The unseen pool splits into
-  // only ~8 (opponent rack | bag) worlds, so we enumerate them all exactly
-  // (enumerate:true) rather than sample — each candidate's mean over the 8
-  // equally-likely worlds is its exact expected value under the rollout, with
-  // no sampling variance and no confidence gate needed (confidence 0 = pick the
-  // argmax). Measured over 518 exact bag=1 solves: mean regret vs the endgame
-  // solver 1.82 pts (static 4.65), 64% optimal (static 48%), p99 move time
-  // ~1.1s — the quality ceiling reachable under ~1s with a greedy rollout
-  // (closing the last ~1.8 pts needs the exact solver at 15-43s/move).
-  preendgame: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 8, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
-  // Two-to-seven tiles in the bag: play static. Measured — no form of low-bag
-  // simulation beats static over 2000-game head-to-head A/Bs (terminal playout
-  // weak s10/c3 50.6% and strong s30/c8 50.9%, and 2-ply horizon 49.6% — all
-  // within noise of 50%). The exact endgame solver at bag 0 is the decisive
-  // phase, and static low-bag play reaches an equivalent bag-0 position, so
-  // simulating bag 2..7 buys nothing while costing a multi-second move-time
-  // tail. (bag 1 is the exception handled by preendgame above, where exact
-  // enumeration makes the value reachable within budget.) The sim config stays
-  // as dormant knobs; set static:false to re-enable the terminal sim.
-  lowbag: { ...SIM_BASE, static: true, mode: 'terminal', samples: 10, candidates: 3, scoreAware: 0, movegenBudget: 0 },
-  // Empty bag: exact adversarial search over perfect information. movegenBudget
-  // is move generations per decision; root moves are evaluated best-first and
-  // the search keeps the best fully-evaluated move when it is hit, bounding
-  // worst-case time without a hard gate. Sized to a ~1s p99 endgame move time
-  // (measured p99 992ms at 900 vs 685ms at 600); crowded opening endgames need
-  // far more and stay capped. nodeMoves = candidate moves per inner node.
-  endgame: { static: false, movegenBudget: 900, nodeMoves: 8 },
+  // bag0: exact adversarial endgame search over perfect information. The solver
+  // reads this directly. movegenBudget is move generations per decision; root
+  // moves are evaluated best-first and the search keeps the best fully-evaluated
+  // move when it is hit, bounding worst-case time without a hard gate. Sized to
+  // a ~1s p99 endgame move time (p99 992ms at 900 vs 685ms at 600); crowded
+  // opening endgames need far more and stay capped. nodeMoves = moves per node.
+  bag0: { static: false, movegenBudget: 900, nodeMoves: 8 },
+  // bag1: near-perfect information. The unseen pool splits into only ~8
+  // (opponent rack | bag) worlds, so enumerate them all exactly (enumerate:true)
+  // rather than sample — each candidate's mean over the 8 equally-likely worlds
+  // is its exact expected value under the rollout, with no sampling variance and
+  // no confidence gate needed (confidence 0 = pick the argmax). Over 518 exact
+  // bag=1 solves: mean regret vs the endgame solver 1.82 pts (static 4.65), 64%
+  // optimal (static 48%), p99 ~1.1s — the quality ceiling reachable under ~1s
+  // with a greedy rollout (the last ~1.8 pts needs the exact solver at
+  // 15-43s/move).
+  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 8, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  // bag2: still near-perfect info, but the unseen pool now splits into C(9,2)=36
+  // worlds — too many to enumerate all of within ~1s (full enumeration p99 ~3s).
+  // Instead sample 10 of the 36 worlds and pick the argmax expected value under
+  // the greedy rollout (confidence 0). A few crowded-board positions have
+  // intrinsically slow rollouts, so the tail is bounded by the world count, not
+  // a node cap (truncation doesn't help when per-node cost is high). Over 105
+  // exact bag=2 solves: mean regret vs the endgame solver 1.43 pts (static 4.20),
+  // 66% optimal (static 54%), p99 ~850ms. More worlds cut regret (24 -> 0.91)
+  // but push p99 past 1s; 10 is the most that fits the budget.
+  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 6, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  // bag3to7: play static. Measured — no form of low-bag simulation beats static
+  // over 2000-game head-to-head A/Bs (terminal playout weak s10/c3 50.6% and
+  // strong s30/c8 50.9%, and 2-ply horizon 49.6% — all within noise of 50%).
+  // The bag0 solver is the decisive phase, and static low-bag play reaches an
+  // equivalent bag-0 position, so simulating here buys nothing while costing a
+  // multi-second move-time tail. (bag1 and bag2 are the exceptions above, where
+  // the small known world space makes the value reachable within budget.) The
+  // sim config stays as dormant knobs; set static:false to re-enable it.
+  bag3to7: { ...SIM_BASE, static: true, mode: 'terminal', samples: 10, candidates: 3, scoreAware: 0, movegenBudget: 0 },
+  // bagGt7 (deep bag): value each world by a 2-ply horizon (score + leave diff).
+  bagGt7: { ...SIM_BASE, mode: 'horizon' },
 };
 
 // bag length -> stage key.
 function stageFor(bagLen) {
-  return bagLen === 0 ? 'endgame'
-    : bagLen === 1 ? 'preendgame'
-    : bagLen < LOWBAG_AT ? 'lowbag'
-    : 'midgame';
+  return bagLen === 0 ? 'bag0'
+    : bagLen === 1 ? 'bag1'
+    : bagLen === 2 ? 'bag2'
+    : bagLen < LOWBAG_AT ? 'bag3to7'
+    : 'bagGt7';
 }
 
 // Headless diagnostic: when TRACE.on, findBestSimMove records override stats.
@@ -1839,7 +1853,7 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   // both-stuck estimate here would systematically overvalue moves whose
   // reply subtree got truncated, and could pick worse than greedy — so we
   // unwind to findBestEndgameMove, which falls back to the greedy move.
-  if (budget.used >= STAGES.endgame.movegenBudget) throw ENDGAME_ABORT;
+  if (budget.used >= STAGES.bag0.movegenBudget) throw ENDGAME_ABORT;
   const plyCap = myRack.length + oppRack.length <= 8 ? 8 : 4;
   if (ply >= plyCap) {
     // Rollouts complete even if they overshoot the budget slightly — a
@@ -1847,7 +1861,7 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
     return greedyRolloutMargin(myRack, oppRack, passes, budget);
   }
 
-  const moves = allMovesSorted(myRack, budget).slice(0, STAGES.endgame.nodeMoves);
+  const moves = allMovesSorted(myRack, budget).slice(0, STAGES.bag0.nodeMoves);
   let best = -Infinity;
   for (const m of moves) {
     const newRack = rackWithout(myRack, m.placements);
@@ -2552,8 +2566,8 @@ async function findBestPreEndgameMove(rack, cfg) {
   const subsets = indexSubsets(pool.length, bagSize); // which pool tiles are the bag
   const wgt = 1 / subsets.length;
   const boardSnap = state.board.map(r => r.slice());
-  const savedBudget = STAGES.endgame.movegenBudget;
-  STAGES.endgame.movegenBudget = cfg.preendBudget;
+  const savedBudget = STAGES.bag0.movegenBudget;
+  STAGES.bag0.movegenBudget = cfg.preendBudget;
   const budget = { used: 0 };
   let best = null, bestEv = -Infinity;
   try {
@@ -2589,7 +2603,7 @@ async function findBestPreEndgameMove(rack, cfg) {
       if (ev > bestEv) { bestEv = ev; best = c.m; }
     }
   } finally {
-    STAGES.endgame.movegenBudget = savedBudget;
+    STAGES.bag0.movegenBudget = savedBudget;
   }
   return best !== null ? best : findBestStaticMove(rack);
 }

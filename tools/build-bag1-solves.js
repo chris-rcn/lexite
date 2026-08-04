@@ -31,7 +31,7 @@ function encodeBoard(board) {
 const rackStr = rack => rack.map(t => t.isBlank ? '?' : t.letter.toUpperCase()).join('');
 
 const P = m.loadEngine(ENGINE, words, { staticOnly: true });
-P.evalInRealm('STAGES.endgame.static = true;'); // fast position generation
+P.evalInRealm('STAGES.bag0.static = true;'); // fast position generation
 const Q = m.loadEngine(ENGINE, words, {});
 Q.evalInRealm(`
   ensureTrie(); ensureLeaveTables();
@@ -46,7 +46,7 @@ Q.evalInRealm(`
     if (cands.length < 2) return JSON.stringify({ skip: 1 });
     const subsets = indexSubsets(pool.length, 1);
     const wgt = 1 / subsets.length;
-    const savedB = STAGES.endgame.movegenBudget; STAGES.endgame.movegenBudget = ${BUDGET};
+    const savedB = STAGES.bag0.movegenBudget; STAGES.bag0.movegenBudget = ${BUDGET};
     const budget = { used: 0 }; const boardSnap = state.board.map(r => r.slice());
     const results = []; let allSolved = true;
     try {
@@ -70,7 +70,7 @@ Q.evalInRealm(`
         if (!ok) { allSolved = false; break; }
         results.push({ k: __moveKey(c.m.placements), w: c.m.word, sc: c.m.score, sv: +c.val.toFixed(1), ex: +(ev * wgt).toFixed(2) });
       }
-    } finally { STAGES.endgame.movegenBudget = savedB; }
+    } finally { STAGES.bag0.movegenBudget = savedB; }
     return JSON.stringify({ pool: pool.map(t => t.isBlank ? '?' : t.letter.toUpperCase()).join(''), results, allSolved });
   };
 `);
