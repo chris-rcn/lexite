@@ -57,13 +57,14 @@ Q.evalInRealm(`
         let ev = 0, ok = true;
         for (const sub of subsets) {
           const oppRack = pool.filter((_, k) => k !== sub[0]);
+          // Even a 7-tile play does NOT go out at bag>=1: it draws the last bag
+          // tile and keeps playing, so my rack refills to leave + the drawn tile
+          // and it becomes the opponent's turn at bag 0. Score every candidate by
+          // the endgame solver on that empty-bag position.
+          const myRack = leave.concat([pool[sub[0]]]); budget.used = 0;
           let v;
-          if (leave.length === 0) v = c.m.score + 2 * rackValueOf(oppRack);
-          else {
-            const myRack = leave.concat([pool[sub[0]]]); budget.used = 0;
-            try { v = c.m.score - endgameSearch(oppRack, myRack, 0, 1, -Infinity, Infinity, budget); }
-            catch (e) { if (e !== ENDGAME_ABORT) throw e; state.board = boardSnap; ok = false; break; }
-          }
+          try { v = c.m.score - endgameSearch(oppRack, myRack, 0, 1, -Infinity, Infinity, budget); }
+          catch (e) { if (e !== ENDGAME_ABORT) throw e; state.board = boardSnap; ok = false; break; }
           ev += v;
         }
         removeFromBoard(c.m.placements);

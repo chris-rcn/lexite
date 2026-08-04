@@ -73,13 +73,15 @@ Q.evalInRealm(`
           const inBag = new Array(pool.length).fill(false);
           for (const i of sub) inBag[i] = true;
           const oppRack = pool.filter((_, k) => !inBag[k]);
+          // A move that empties the bag refills my rack to leave + the drawn bag
+          // tiles (even a 7-tile play does NOT go out at bag>=1 — it draws the
+          // last bag tile(s) and keeps playing), and it becomes the opponent's
+          // turn at bag 0. So every candidate is scored by the endgame solver on
+          // the resulting empty-bag position.
+          const myRack = leave.concat(sub.map(i => pool[i])); budget.used = 0;
           let v;
-          if (leave.length === 0) v = c.m.score + 2 * rackValueOf(oppRack); // went out on the move
-          else {
-            const myRack = leave.concat(sub.map(i => pool[i])); budget.used = 0; // drew the bag tiles
-            try { v = c.m.score - endgameSearch(oppRack, myRack, 0, 1, -Infinity, Infinity, budget); }
-            catch (e) { if (e !== ENDGAME_ABORT) throw e; state.board = boardSnap; ok = false; break; }
-          }
+          try { v = c.m.score - endgameSearch(oppRack, myRack, 0, 1, -Infinity, Infinity, budget); }
+          catch (e) { if (e !== ENDGAME_ABORT) throw e; state.board = boardSnap; ok = false; break; }
           ev += v;
         }
         removeFromBoard(c.m.placements);
