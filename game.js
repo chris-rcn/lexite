@@ -2267,15 +2267,34 @@ async function findBestSimMove(rack, cfg) {
   const oppSize = pool.length - realBag.length;
   if (oppSize <= 0) return armResult(arms[0]);
 
-  const rng = seededRng(positionHash(rack));
+  // Worlds place oppSize tiles as the opponent rack and the rest as draw
+  // order. When cfg.enumerate is set and the bag is small enough, replace
+  // Monte-Carlo sampling with an exact enumeration of every way to split the
+  // unseen pool into (opponent rack | bag): each distinct split appears once
+  // with equal weight, so the per-arm mean is the exact expected value under
+  // the rollout policy — no sampling variance, and only C(pool, bag) worlds
+  // (8 at bag=1) instead of cfg.samples. Falls back to sampling if the split
+  // count would exceed cfg.samples (nothing gained by enumerating then).
   const worlds = [];
-  for (let w = 0; w < cfg.samples; w++) {
-    const p = pool.slice();
-    for (let i = p.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [p[i], p[j]] = [p[j], p[i]];
+  const splitCount = enumChoose(pool.length, realBag.length);
+  if (cfg.enumerate && splitCount > 0 && splitCount <= cfg.samples) {
+    for (const bagIdx of indexSubsets(pool.length, realBag.length)) {
+      const inBag = new Array(pool.length).fill(false);
+      for (const k of bagIdx) inBag[k] = true;
+      const opp = [], bagTiles = [];
+      for (let k = 0; k < pool.length; k++) (inBag[k] ? bagTiles : opp).push(pool[k]);
+      worlds.push(opp.concat(bagTiles)); // opponent rack, then bag draw order
     }
-    worlds.push(p); // first oppSize tiles: opponent rack; rest: draw order
+  } else {
+    const rng = seededRng(positionHash(rack));
+    for (let w = 0; w < cfg.samples; w++) {
+      const p = pool.slice();
+      for (let i = p.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [p[i], p[j]] = [p[j], p[i]];
+      }
+      worlds.push(p); // first oppSize tiles: opponent rack; rest: draw order
+    }
   }
 
   // Paired statistics of candidate ci vs candidate base over the first
@@ -2486,6 +2505,17 @@ function indexSubsets(n, k) {
   };
   rec(0, []);
   return out;
+}
+
+// Binomial C(n, k): the number of ways to split an n-tile pool into a k-tile
+// bag and the rest. Used to decide whether exact world enumeration is cheaper
+// than Monte-Carlo sampling.
+function enumChoose(n, k) {
+  if (k < 0 || k > n) return 0;
+  k = Math.min(k, n - k);
+  let c = 1;
+  for (let i = 0; i < k; i++) c = (c * (n - i)) / (i + 1);
+  return Math.round(c);
 }
 
 // Exact solver-based pre-endgame policy. When the bag holds only a tile or two

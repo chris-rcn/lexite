@@ -5,6 +5,7 @@
 // candidates). Strategy specs:
 //   static        static move generator
 //   sim:S:C       terminal simulation, S samples, C candidates, margin 0, gate 0
+//   enum:C        exact world enumeration (no sampling), C candidates
 //   simb:S:C:P    Bayesian sim: static-anchored prior, priorSd P (small=strong)
 //   simt:S:C:B    truncated terminal sim, node budget B per decision (0=unlimited)
 //   solver:C:B    exact solver pre-endgame, C candidates, per-solve budget B
@@ -39,6 +40,10 @@ else if (SPEC.startsWith('simt:')) { const [, S, C, B] = SPEC.split(':');
   setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
     STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.confidence = 0;
     STAGES.lowbag.movegenBudget = ${+B};`; }
+else if (SPEC.startsWith('enum:')) { const [, C] = SPEC.split(':');
+  setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.enumerate = true;
+    STAGES.lowbag.samples = 4096; STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0;
+    STAGES.lowbag.confidence = 0; STAGES.lowbag.movegenBudget = 0;`; }
 else if (SPEC.startsWith('simb:')) { const [, S, C, P] = SPEC.split(':');
   setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
     STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.movegenBudget = 0;
@@ -81,5 +86,5 @@ E.evalInRealm(`globalThis.__pick = async function(boardJson, rackJson){
   const q = p => times[Math.floor(p * (times.length - 1))];
   console.log(`strategy ${SPEC} | positions ${n} | scored ${scored} off-benchmark ${off}`);
   console.log(`mean regret ${(sumReg / Math.max(1, scored)).toFixed(2)} pts | optimal ${(100 * optimal / Math.max(1, scored)).toFixed(0)}%`);
-  console.log(`decision time: mean ${(sumMs / n).toFixed(1)} ms | p50 ${q(.5).toFixed(1)} | p90 ${q(.9).toFixed(1)} | max ${q(1).toFixed(1)} | total ${(sumMs / 1000).toFixed(1)} s`);
+  console.log(`decision time: mean ${(sumMs / n).toFixed(1)} ms | p50 ${q(.5).toFixed(1)} | p90 ${q(.9).toFixed(1)} | p99 ${q(.99).toFixed(1)} | max ${q(1).toFixed(1)} | total ${(sumMs / 1000).toFixed(1)} s`);
 })();
