@@ -5,6 +5,7 @@
 // candidates). Strategy specs:
 //   static        static move generator
 //   sim:S:C       terminal simulation, S samples, C candidates, margin 0, gate 0
+//   simb:S:C:P    Bayesian sim: static-anchored prior, priorSd P (small=strong)
 //   simt:S:C:B    truncated terminal sim, node budget B per decision (0=unlimited)
 //   solver:C:B    exact solver pre-endgame, C candidates, per-solve budget B
 //
@@ -38,6 +39,10 @@ else if (SPEC.startsWith('simt:')) { const [, S, C, B] = SPEC.split(':');
   setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
     STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.confidence = 0;
     STAGES.lowbag.movegenBudget = ${+B};`; }
+else if (SPEC.startsWith('simb:')) { const [, S, C, P] = SPEC.split(':');
+  setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
+    STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.movegenBudget = 0;
+    STAGES.lowbag.bayes = 1; STAGES.lowbag.priorSd = ${+P}; STAGES.lowbag.overruleP = 0.5;`; }
 else if (SPEC.startsWith('sim:')) { const [, S, C] = SPEC.split(':');
   setup += `STAGES.lowbag.static = false; STAGES.lowbag.mode = 'terminal'; STAGES.lowbag.samples = ${+S};
     STAGES.lowbag.candidates = ${+C}; STAGES.lowbag.margin = 0; STAGES.lowbag.confidence = 0;
