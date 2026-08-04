@@ -171,7 +171,7 @@ function loadEngine(file, words, opts = {}) {
     // staticOnly: play the simulation stages statically; the empty-bag
     // endgame solver still runs (matching the pre-refactor staticOnly).
     if (${opts.staticOnly ? 'true' : 'false'} && typeof STAGES !== 'undefined') {
-      STAGES.bag1.static = true; STAGES.bag2.static = true; STAGES.bag3to7.static = true; STAGES.bagGt7.static = true;
+      STAGES.bag1.static = true; STAGES.bag2.static = true; STAGES.bag3.static = true; STAGES.bag4to7.static = true; STAGES.bagGt7.static = true;
     }
     ${opts.bagAware === undefined ? ''
       : `if (typeof installBagAwareLeave === 'function') installBagAwareLeave(${opts.bagAware ? 'true' : 'false'});`}

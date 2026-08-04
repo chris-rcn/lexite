@@ -1684,7 +1684,7 @@ const SIM_BASE = {
 
 // Move-selection policy keyed by bag state — how many tiles remain in the bag —
 // rather than by stage names. Each key names the bag counts it governs; stageFor
-// maps a bag count to its key. Boundaries: bag3to7 spans 3..LOWBAG_AT-1 and
+// maps a bag count to its key. Boundaries: bag4to7 spans 4..LOWBAG_AT-1 and
 // bagGt7 is LOWBAG_AT+ (LOWBAG_AT defaults to 8).
 const STAGES = {
   // bag0: exact adversarial endgame search over perfect information. The solver
@@ -1714,15 +1714,25 @@ const STAGES = {
   // 66% optimal (static 54%), p99 ~850ms. More worlds cut regret (24 -> 0.91)
   // but push p99 past 1s; 10 is the most that fits the budget.
   bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 6, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
-  // bag3to7: play static. Measured — no form of low-bag simulation beats static
+  // bag3: the unseen pool splits into C(10,3)=120 worlds — far too many to
+  // enumerate within ~1s (full enumeration runs p99 ~7s). Sample 6 of them and
+  // pick the argmax under the greedy rollout (confidence 0). Fewer worlds than
+  // bag2 because bag=3 rollouts are longer (a move that doesn't empty the bag
+  // plays out through bag 3->2->1->0), so the same ~1s budget buys fewer. Scored
+  // against an approximate oracle (greedy rollout over all 120 worlds — bag=3 is
+  // too deep to solve exactly): over 205 positions mean regret 2.55 pts (static
+  // 7.41), 61% optimal (static 40%), p99 ~780ms. More worlds cut regret (10 ->
+  // 2.15, 24 -> 1.8) but push p99 past 1s; 6 is the most that safely holds it.
+  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 6, candidates: 6, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  // bag4to7: play static. Measured — no form of low-bag simulation beats static
   // over 2000-game head-to-head A/Bs (terminal playout weak s10/c3 50.6% and
   // strong s30/c8 50.9%, and 2-ply horizon 49.6% — all within noise of 50%).
   // The bag0 solver is the decisive phase, and static low-bag play reaches an
   // equivalent bag-0 position, so simulating here buys nothing while costing a
-  // multi-second move-time tail. (bag1 and bag2 are the exceptions above, where
-  // the small known world space makes the value reachable within budget.) The
-  // sim config stays as dormant knobs; set static:false to re-enable it.
-  bag3to7: { ...SIM_BASE, static: true, mode: 'terminal', samples: 10, candidates: 3, scoreAware: 0, movegenBudget: 0 },
+  // multi-second move-time tail. (bag1-3 are the exceptions above, where the
+  // small known world space makes the value reachable within budget.) The sim
+  // config stays as dormant knobs; set static:false to re-enable it.
+  bag4to7: { ...SIM_BASE, static: true, mode: 'terminal', samples: 10, candidates: 3, scoreAware: 0, movegenBudget: 0 },
   // bagGt7 (deep bag): value each world by a 2-ply horizon (score + leave diff).
   bagGt7: { ...SIM_BASE, mode: 'horizon' },
 };
@@ -1732,7 +1742,8 @@ function stageFor(bagLen) {
   return bagLen === 0 ? 'bag0'
     : bagLen === 1 ? 'bag1'
     : bagLen === 2 ? 'bag2'
-    : bagLen < LOWBAG_AT ? 'bag3to7'
+    : bagLen === 3 ? 'bag3'
+    : bagLen < LOWBAG_AT ? 'bag4to7'
     : 'bagGt7';
 }
 
