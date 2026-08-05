@@ -7,7 +7,6 @@
 //   sim:S:C       terminal simulation, S samples, C candidates, margin 0, gate 0
 //   enum:C        exact world enumeration (no sampling), C candidates
 //   simb:S:C:P    Bayesian sim: static-anchored prior, priorSd P (small=strong)
-//   simt:S:C:B    truncated terminal sim, node budget B per decision (0=unlimited)
 //   solver:C:B    exact solver pre-endgame, C candidates, per-solve budget B
 //
 //   node tools/eval-bag1-strategy.js [collection.json] [spec]
@@ -40,9 +39,6 @@ let setup = `ensureTrie(); ensureLeaveTables();
   STAGES.bag1.enumerate = false; STAGES.bag1.bayes = 0; STAGES.bag1.confidence = 0;
   globalThis.__moveKey = (pl) => pl.map(p => p.row + ',' + p.col + ',' + (p.isBlank ? '?' : p.letter.toUpperCase())).sort().join('|');`;
 if (SPEC === 'static') setup += `STAGES.bag1.static = true;`;
-else if (SPEC.startsWith('simt:')) { const [, S, C, B] = SPEC.split(':');
-  setup += `STAGES.bag1.static = false; STAGES.bag1.mode = 'terminal'; STAGES.bag1.samples = ${+S};
-    STAGES.bag1.candidates = ${+C}; STAGES.bag1.margin = 0; STAGES.bag1.movegenBudget = ${+B};`; }
 else if (SPEC.startsWith('enum:')) { const [, C] = SPEC.split(':');
   setup += `STAGES.bag1.static = false; STAGES.bag1.mode = 'terminal'; STAGES.bag1.enumerate = true;
     STAGES.bag1.samples = 4096; STAGES.bag1.candidates = ${+C}; STAGES.bag1.margin = 0;

@@ -10,7 +10,6 @@
 //   sim:S:C       terminal sim, S sampled worlds, C candidates, margin 0, gate 0
 //   simp:S:C:M    like sim, but pruning starts after M worlds (M>=S = no pruning)
 //   simb:S:C:P    Bayesian sim: static-anchored prior, priorSd P (small=strong)
-//   simt:S:C:B    truncated terminal sim, node budget B per decision
 //   solver:C:B    exact solver pre-endgame, C candidates, per-solve budget B
 //
 //   node tools/eval-preend-strategy.js [collection.json] [spec]
@@ -44,9 +43,6 @@ const STG = E.evalInRealm(`ensureTrie(); ensureLeaveTables(); stageFor(${BAG})`)
 let setup = `STAGES.${STG}.enumerate = false; STAGES.${STG}.bayes = 0; STAGES.${STG}.confidence = 0;
   globalThis.__moveKey = (pl) => pl.map(p => p.row + ',' + p.col + ',' + (p.isBlank ? '?' : p.letter.toUpperCase())).sort().join('|');`;
 if (SPEC === 'static') setup += `STAGES.${STG}.static = true;`;
-else if (SPEC.startsWith('simt:')) { const [, S, C, B] = SPEC.split(':');
-  setup += `STAGES.${STG}.static = false; STAGES.${STG}.mode = 'terminal'; STAGES.${STG}.samples = ${+S};
-    STAGES.${STG}.candidates = ${+C}; STAGES.${STG}.margin = 0; STAGES.${STG}.movegenBudget = ${+B};`; }
 else if (SPEC.startsWith('enum:')) { const [, C] = SPEC.split(':');
   setup += `STAGES.${STG}.static = false; STAGES.${STG}.mode = 'terminal'; STAGES.${STG}.enumerate = true;
     STAGES.${STG}.samples = 4096; STAGES.${STG}.candidates = ${+C}; STAGES.${STG}.margin = 0;

@@ -1703,7 +1703,7 @@ const STAGES = {
   // optimal (static 48%), p99 ~1.1s — the quality ceiling reachable under ~1s
   // with a greedy rollout (the last ~1.8 pts needs the exact solver at
   // 15-43s/move).
-  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 8, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 8, margin: 0, confidence: 0, scoreAware: 0 },
   // bag2: still near-perfect info, but the unseen pool now splits into C(9,2)=36
   // worlds — too many to enumerate all of within ~1s (full enumeration p99 ~3s).
   // Instead sample 10 of the 36 worlds and pick the argmax expected value under
@@ -1713,7 +1713,7 @@ const STAGES = {
   // exact bag=2 solves: mean regret vs the endgame solver 1.43 pts (static 4.20),
   // 66% optimal (static 54%), p99 ~850ms. More worlds cut regret (24 -> 0.91)
   // but push p99 past 1s; 10 is the most that fits the budget.
-  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 6, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 6, margin: 0, confidence: 0, scoreAware: 0 },
   // bag3: the unseen pool splits into C(10,3)=120 worlds — far too many to
   // enumerate within ~1s (full enumeration runs p99 ~7s). Sample 10 of them over
   // 5 candidates and pick the argmax under the greedy rollout (confidence 0).
@@ -1723,7 +1723,7 @@ const STAGES = {
   // too deep to solve exactly): over 205 positions mean regret 2.30 pts (static
   // 7.41), 61% optimal (static 40%), p99 ~990ms. (C=6/S=6 was 2.55; C=4 is worse
   // here — unlike bag4 — because bag3's best move often sits at rank 5.)
-  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 5, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 5, margin: 0, confidence: 0, scoreAware: 0 },
   // bag4: C(11,4)=330 worlds. With the ~1s budget stretched this thin, world
   // coverage — not candidate count — is the bottleneck, so the budget-optimal
   // split is FEWER candidates and MORE worlds: sample 10 worlds over only 4
@@ -1733,7 +1733,7 @@ const STAGES = {
   // but the trustworthy paired gap is +1.89 pts of picked-move value vs static
   // at p99 ~900ms. C=6/S=6 recovers only +1.13 at the same budget; C=4/S=10 is
   // the frontier optimum (C=3 starts missing rank-4 best moves).
-  bag4: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  bag4: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, confidence: 0, scoreAware: 0 },
   // bag5: C(12,5)=792 worlds. Same starved-budget regime as bag4 — reuse the
   // 10-world / 4-candidate split (regret 4.30 vs a 100-world greedy-sample
   // oracle over 224 positions, paired gap +1.16 pts vs static, p99 ~830ms). The
@@ -1742,7 +1742,7 @@ const STAGES = {
   // naive C=6/S=6 is actually WORSE than static here (winner's curse on 6 noisy
   // worlds), and the gap-vs-static is against a greedy oracle — treat as tuning,
   // not a strength verdict, pending a win-rate A/B.
-  bag5: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  bag5: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, confidence: 0, scoreAware: 0 },
   // bag6: C(13,6)=1716 worlds. The board is wide open, so the best move is almost
   // always one of the top 2 — the budget-optimal split drops to just 2
   // candidates over 10 worlds. Against a sim:50:8 (50-world) greedy oracle over
@@ -1750,7 +1750,7 @@ const STAGES = {
   // ~650ms (well under budget). C=2 beats C=3/4 here (+1.4-1.6); the naive
   // C=6/S=6 recovers only +0.56. As with bag4/5 this is a greedy-oracle tuning
   // result, not a strength verdict — pending a win-rate A/B.
-  bag6: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 2, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  bag6: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 2, margin: 0, confidence: 0, scoreAware: 0 },
   // bag7: play static. Measured — no form of low-bag simulation beats static
   // over 2000-game head-to-head A/Bs (terminal playout weak s10/c3 50.6% and
   // strong s30/c8 50.9%, and 2-ply horizon 49.6% — all within noise of 50%).
@@ -1759,7 +1759,7 @@ const STAGES = {
   // multi-second move-time tail. (bag1-6 are the exceptions above, where the
   // known world space makes the value reachable within budget.) The sim config
   // stays as dormant knobs; set static:false to re-enable it.
-  bag7: { ...SIM_BASE, static: true, mode: 'terminal', samples: 10, candidates: 3, scoreAware: 0, movegenBudget: 0 },
+  bag7: { ...SIM_BASE, static: true, mode: 'terminal', samples: 10, candidates: 3, scoreAware: 0 },
   // bagGt7 (deep bag): value each world by a 2-ply horizon (score + leave diff).
   bagGt7: { ...SIM_BASE, mode: 'horizon' },
 };
@@ -1791,7 +1791,6 @@ const TRACE = {
   lastRank: 0,      // chosen arm index (0 = static best)
   lastZ: 0,         // paired z (mean/se) of chosen vs arm 0: override strength
   lastNArms: 0,     // number of candidate arms considered (margin/count binding)
-  lastNodes: 0,     // move generations the last terminal decision spent
 };
 
 // Thrown by endgameSearch when the movegen budget is exhausted; caught by
@@ -2148,13 +2147,11 @@ function normalCdf(z) { return 0.5 * (1 + erfApprox(z / Math.SQRT2)); }
 // is the shared node budget below; this is just an infinite-loop backstop.
 const PLAYOUT_PLY_GUARD = 24;
 
-// budget is a shared {used} counter for the whole decision (all worlds and
-// candidates); each playout charges one node per move generation. When the
-// decision's node budget (budgetCap, 0 = unlimited) is exhausted, playouts
-// truncate to the damped leave differential — cheaply — so total decision
-// cost is bounded at ~budgetCap move generations regardless of how long
-// individual playouts would have run.
-async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, budget, budgetCap) {
+// Plays the sampled world to the end of the game (both sides greedy), returning
+// the exact final margin for the mover. The only cutoff is a hard ply guard: a
+// pathological board where neither side terminates falls back to the damped
+// leave differential rather than looping forever.
+async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize) {
   let margin = moveScore;
   const applied = [];
   let myRack = myKeptTiles.slice();
@@ -2168,9 +2165,8 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, budget, b
   let side = 1; // opponent moves next
   let passes = 0;
   for (let plies = 0; ; plies++) {
-    if (plies > PLAYOUT_PLY_GUARD || (budgetCap > 0 && budget.used >= budgetCap)) {
-      // Truncated (ply guard or node budget): fall back to the damped leave
-      // differential rather than keep playing.
+    if (plies > PLAYOUT_PLY_GUARD) {
+      // Infinite-loop backstop only: fall back to the damped leave differential.
       const scaleH = Math.min(1, bagArr.length / 7);
       margin += scaleH *
         (leaveValueFromCounts(tileCounts(myRack)) - leaveValueFromCounts(tileCounts(oppRack)));
@@ -2178,7 +2174,6 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, budget, b
     }
     state.bag = bagArr; // consumers only read its length
     const mover = side === 1 ? oppRack : myRack;
-    budget.used++; // charge one node per move generation
     const mv = await findBestStaticMove(mover);
     if (!mv) {
       if (++passes >= 2) {
@@ -2416,10 +2411,6 @@ async function findBestSimMove(rack, cfg) {
   // worlds run to terminal, so it rides on toTerminal.
   const scoreAware = toTerminal && cfg.scoreAware;
   const myScoreMargin = state.computerScore - state.playerScore;
-  // Shared node budget across the whole terminal decision (all worlds and
-  // candidates); simPlayoutValue charges one node per move generation and
-  // truncates once cfg.movegenBudget is spent (0 = unlimited).
-  const playoutBudget = { used: 0 };
   const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
   try {
@@ -2436,7 +2427,7 @@ async function findBestSimMove(rack, cfg) {
           // Near the endgame the sampled world is cheap to finish: play
           // it out and score the exact final margin — no horizon
           // heuristic, and the leave taper plays no evaluation role.
-          const margin = await simPlayoutValue(arm.score, myKept, world, oppSize, playoutBudget, cfg.movegenBudget);
+          const margin = await simPlayoutValue(arm.score, myKept, world, oppSize);
           if (arm.placements) removeFromBoard(arm.placements);
           // Score-aware: collapse the final margin to a win indicator against
           // the current standing (ties count as half a win).
@@ -2507,7 +2498,6 @@ async function findBestSimMove(rack, cfg) {
   } finally {
     inSimulation = false;
     state.bag = realBag;
-    TRACE.lastNodes = playoutBudget.used; // move generations this decision spent (terminal only)
   }
 
   // The static choice (candidate 0) stays unless a surviving challenger

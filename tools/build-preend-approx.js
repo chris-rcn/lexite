@@ -80,7 +80,7 @@ Q.evalInRealm(`
         const leave = rackWithout(rack, c.m.placements);
         applyToBoard(c.m.placements);
         let ev = 0;
-        for (const world of worlds) ev += await simPlayoutValue(c.m.score, leave, world, oppSize, { used: 0 }, 0);
+        for (const world of worlds) ev += await simPlayoutValue(c.m.score, leave, world, oppSize);
         removeFromBoard(c.m.placements);
         results.push({ k: __moveKey(c.m.placements), w: c.m.word, sc: c.m.score, sv: +c.val.toFixed(1), ex: +(ev * wgt).toFixed(2) });
       }
