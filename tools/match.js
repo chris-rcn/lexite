@@ -331,10 +331,18 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
 // result record in engine-A/B terms rather than seat terms.
 async function playSpec(spec, verbose, label) {
   const words = loadWords();
-  const A = loadEngine(spec.a, words, { staticOnly: spec.staticOnly });
-  const B = loadEngine(spec.b, words, { staticOnly: spec.staticOnly });
+  // Per-engine staticOnly (falls back to the shared spec.staticOnly), plus an
+  // optional realm-eval override applied after load (e.g. force one stage
+  // static). Lets a match pit two different stage configs of the same engine.
+  const A = loadEngine(spec.a, words, { staticOnly: spec.aStatic ?? spec.staticOnly });
+  const B = loadEngine(spec.b, words, { staticOnly: spec.bStatic ?? spec.staticOnly });
+  if (spec.aEval) A.evalInRealm(spec.aEval);
+  if (spec.bEval) B.evalInRealm(spec.bEval);
   const seatEngines = spec.swap ? [B, A] : [A, B];
   const g = await playGame(seatEngines, spec.bag, verbose, label);
+  // Score margin at low-bag entry, converted to A-minus-B terms (for close-game
+  // filtering regardless of which seat A took this game).
+  const mLow = g.marginLowbag == null ? null : (spec.swap ? -g.marginLowbag : g.marginLowbag);
   return {
     aScore: spec.swap ? g.scores[1] : g.scores[0],
     bScore: spec.swap ? g.scores[0] : g.scores[1],
@@ -342,6 +350,7 @@ async function playSpec(spec, verbose, label) {
     moves: g.moves,
     aStats: A.stats,
     bStats: B.stats,
+    marginLowbag: mLow,
   };
 }
 
