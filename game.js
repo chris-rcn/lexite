@@ -1715,15 +1715,15 @@ const STAGES = {
   // but push p99 past 1s; 10 is the most that fits the budget.
   bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 6, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
   // bag3: the unseen pool splits into C(10,3)=120 worlds — far too many to
-  // enumerate within ~1s (full enumeration runs p99 ~7s). Sample 6 of them and
-  // pick the argmax under the greedy rollout (confidence 0). Fewer worlds than
-  // bag2 because bag=3 rollouts are longer (a move that doesn't empty the bag
-  // plays out through bag 3->2->1->0), so the same ~1s budget buys fewer. Scored
+  // enumerate within ~1s (full enumeration runs p99 ~7s). Sample 10 of them over
+  // 5 candidates and pick the argmax under the greedy rollout (confidence 0).
+  // This holds the ~10-world budget shared with bag2/bag4 while candidates step
+  // down 6->5->4 across bag2->3->4 as the best-move mass concentrates. Scored
   // against an approximate oracle (greedy rollout over all 120 worlds — bag=3 is
-  // too deep to solve exactly): over 205 positions mean regret 2.55 pts (static
-  // 7.41), 61% optimal (static 40%), p99 ~780ms. More worlds cut regret (10 ->
-  // 2.15, 24 -> 1.8) but push p99 past 1s; 6 is the most that safely holds it.
-  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 6, candidates: 6, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
+  // too deep to solve exactly): over 205 positions mean regret 2.30 pts (static
+  // 7.41), 61% optimal (static 40%), p99 ~990ms. (C=6/S=6 was 2.55; C=4 is worse
+  // here — unlike bag4 — because bag3's best move often sits at rank 5.)
+  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 5, margin: 0, confidence: 0, scoreAware: 0, movegenBudget: 0 },
   // bag4: C(11,4)=330 worlds. With the ~1s budget stretched this thin, world
   // coverage — not candidate count — is the bottleneck, so the budget-optimal
   // split is FEWER candidates and MORE worlds: sample 10 worlds over only 4
