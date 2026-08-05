@@ -1751,15 +1751,15 @@ const STAGES = {
   // C=6/S=6 recovers only +0.56. As with bag4/5 this is a greedy-oracle tuning
   // result, not a strength verdict — pending a win-rate A/B.
   bag6: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 2, margin: 0, confidence: 0, scoreAware: 0 },
-  // bag7: play static. Measured — no form of low-bag simulation beats static
-  // over 2000-game head-to-head A/Bs (terminal playout weak s10/c3 50.6% and
-  // strong s30/c8 50.9%, and 2-ply horizon 49.6% — all within noise of 50%).
-  // The bag0 solver is the decisive phase, and static low-bag play reaches an
-  // equivalent bag-0 position, so simulating here buys nothing while costing a
-  // multi-second move-time tail. (bag1-6 are the exceptions above, where the
-  // known world space makes the value reachable within budget.) The sim config
-  // stays as dormant knobs; set static:false to re-enable it.
-  bag7: { ...SIM_BASE, static: true, mode: 'terminal', samples: 10, candidates: 3, scoreAware: 0 },
+  // bag7: C(14,7)=3432 worlds and the longest rollouts of any pre-endgame band
+  // (a move that doesn't empty the bag plays out through bag 7->0). Sample 8
+  // worlds over 2 candidates. Against a sim:50:6 (50-world) greedy oracle over
+  // 211 positions: paired gap +0.60 pts vs static, p99 ~1010ms (at the budget
+  // line). This is the smallest edge of any band and the greedy oracle is
+  // thinnest here (1.5% world coverage) — treat as tuning, not a strength
+  // verdict. A 2-ply horizon eval (unlike terminal rollout) does NOT beat static
+  // here: it never reaches the endgame where the value lives.
+  bag7: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 8, candidates: 2, margin: 0, confidence: 0, scoreAware: 0 },
   // bagGt7 (deep bag): value each world by a 2-ply horizon (score + leave diff).
   bagGt7: { ...SIM_BASE, mode: 'horizon' },
 };
