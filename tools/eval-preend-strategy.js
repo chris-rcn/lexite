@@ -55,6 +55,9 @@ else if (SPEC.startsWith('simb:')) { const [, S, C, P] = SPEC.split(':');
   setup += `STAGES.${STG}.static = false; STAGES.${STG}.mode = 'terminal'; STAGES.${STG}.samples = ${+S};
     STAGES.${STG}.candidates = ${+C}; STAGES.${STG}.margin = 0; STAGES.${STG}.movegenBudget = 0;
     STAGES.${STG}.bayes = 1; STAGES.${STG}.priorSd = ${+P}; STAGES.${STG}.overruleP = 0.5;`; }
+else if (SPEC.startsWith('hor:')) { const [, S, C] = SPEC.split(':');
+  setup += `STAGES.${STG}.static = false; STAGES.${STG}.mode = 'horizon'; STAGES.${STG}.samples = ${+S};
+    STAGES.${STG}.candidates = ${+C}; STAGES.${STG}.margin = 0;`; } // 2-ply horizon eval, like bagGt7
 else if (SPEC.startsWith('simp:')) { const [, S, C, M] = SPEC.split(':');
   setup += `STAGES.${STG}.static = false; STAGES.${STG}.mode = 'terminal'; STAGES.${STG}.samples = ${+S};
     STAGES.${STG}.candidates = ${+C}; STAGES.${STG}.margin = 0; STAGES.${STG}.movegenBudget = 0;
