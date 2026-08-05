@@ -144,6 +144,7 @@ main {
 
 #board-container {
   flex-shrink: 0;
+  position: relative; /* anchor for the score bubble */
 }
 
 #board {
@@ -346,12 +347,50 @@ main {
   line-height: 1;
 }
 
-#btn-shuffle, #btn-recall {
+#btn-shuffle, #btn-recall, #btn-exchange {
   background: #e8e0d0;
   color: #3a2a00;
   flex: 1;
 }
-#btn-shuffle:hover, #btn-recall:hover { background: #d4c8b0; }
+#btn-shuffle:hover, #btn-recall:hover, #btn-exchange:hover { background: #d4c8b0; }
+
+/* Exchange mode */
+#exchange-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#exchange-hint {
+  flex: 1;
+  font-size: 0.8rem;
+  color: #666;
+}
+
+#exchange-confirm {
+  background: #2a7a3a;
+  color: #fff;
+  font-weight: 700;
+  padding: 9px 14px;
+}
+
+#exchange-confirm:hover { background: #228b32; }
+
+#exchange-cancel {
+  background: #e0e0e0;
+  color: #444;
+  padding: 9px 14px;
+}
+
+#exchange-cancel:hover { background: #ccc; }
+
+.rack-tile.exchange-marked {
+  border-color: #c0392b;
+  background: #ffd7c9;
+  transform: translateY(-6px);
+}
 
 /* ========================
    ACTION BUTTONS
@@ -359,13 +398,21 @@ main {
 
 #action-buttons {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   gap: 8px;
   margin-top: 8px;
 }
 
-#action-buttons button {
+.action-row {
+  display: flex;
+  gap: 8px;
+}
+
+.action-row button {
   flex: 1;
+  min-width: 0;
+  padding: 9px 8px;
+  font-size: 0.85rem;
 }
 
 .btn-primary {
@@ -377,14 +424,6 @@ main {
   flex: 1;
 }
 .btn-primary:hover { background: #228b32; }
-
-.btn-secondary {
-  background: #b0a090;
-  color: #2c1a00;
-  padding: 8px;
-  flex: 1;
-}
-.btn-secondary:hover { background: #968070; }
 
 
 /* ========================
@@ -570,6 +609,67 @@ main {
 #blank-cancel:hover { background: #ccc; }
 
 /* ========================
+   CONFIRMATION DIALOGS (pass, new game)
+   ======================== */
+
+#pass-overlay, #newgame-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+#pass-dialog, .confirm-dialog {
+  background: #fff;
+  border-radius: 10px;
+  padding: 22px 26px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  max-width: 300px;
+  width: 90%;
+  text-align: center;
+}
+
+#pass-title, .confirm-title {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: #2c1a00;
+  margin-bottom: 6px;
+}
+
+#pass-text, .confirm-text {
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 16px;
+}
+
+#pass-buttons, .confirm-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+#pass-confirm, #newgame-confirm {
+  flex: 1;
+  background: #2a7a3a;
+  color: #fff;
+  font-weight: 700;
+  padding: 9px;
+}
+
+#pass-confirm:hover, #newgame-confirm:hover { background: #228b32; }
+
+#pass-cancel, #newgame-cancel {
+  flex: 1;
+  background: #e0e0e0;
+  color: #444;
+  padding: 9px;
+}
+
+#pass-cancel:hover, #newgame-cancel:hover { background: #ccc; }
+
+/* ========================
    END GAME DIALOG
    ======================== */
 
@@ -624,6 +724,16 @@ main {
 
 #btn-play-again:hover { background: #228b32; }
 
+#end-close {
+  display: block;
+  margin: 10px auto 0;
+  background: #e0e0e0;
+  color: #444;
+  padding: 8px 20px;
+}
+
+#end-close:hover { background: #ccc; }
+
 /* ========================
    RESPONSIVE
    ======================== */
@@ -650,8 +760,16 @@ main {
 }
 
 @media (max-width: 400px) {
-  :root { --board-size: 98vw; }
-  h1 { font-size: 1.2rem; }
+  /* Full width minus main's padding, so the page never scrolls sideways */
+  :root { --board-size: calc(100vw - 16px); }
+  h1 { font-size: 1.1rem; letter-spacing: 0.04em; }
+
+  /* The header must also fit: tighten paddings, gaps, and the scoreboard */
+  header { padding: 0 10px; gap: 8px; }
+  #scoreboard { gap: 8px; }
+  .score-value { font-size: 1.1rem; min-width: 30px; }
+  .score-label { font-size: 0.62rem; }
+  #btn-new-game { padding: 5px 8px; font-size: 0.72rem; }
 
   .rack-tile {
     width: 40px;
@@ -660,10 +778,12 @@ main {
   }
 }
 
-/* Score preview bubble */
+/* Score preview bubble — positioned relative to the board container so it
+   stays glued to its cell when the page scrolls. Keep z-index below the
+   dialog overlays (z 100+). */
 #score-bubble {
-  position: fixed;
-  z-index: 600;
+  position: absolute;
+  z-index: 50;
   background: #27ae60;
   color: #fff;
   font-weight: 800;
@@ -681,6 +801,37 @@ main {
 @keyframes bubble-pop {
   from { opacity: 0; transform: translate(-50%, -50%) scale(0.65); }
   to   { opacity: 0.75; transform: translate(-50%, -50%) scale(1); }
+}
+
+/* Invalid-move error toast */
+#error-toast {
+  position: fixed;
+  top: 68px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  background: #c0392b;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 8px 16px;
+  border-radius: 6px;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.4);
+  max-width: 90vw;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Word-list load failure message */
+#load-error {
+  background: #fff3f0;
+  color: #a03020;
+  border: 1px solid #d0806c;
+  border-radius: 8px;
+  padding: 20px;
+  max-width: 480px;
+  font-size: 0.95rem;
+  line-height: 1.5;
 }
 
 #build-stamp {

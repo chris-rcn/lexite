@@ -8,7 +8,7 @@ A single-player word tile game played against the computer on a 15×15 board.
 - Standard tile distribution and letter values (100 tiles)
 - Single-player vs. computer — the computer always plays the highest-scoring valid move
 - Shuffle button to rearrange your rack
-- Open-source word list (ENABLE — public domain, ~173,000 words)
+- Open-source, public-domain word list
 
 ## How to Play
 
@@ -21,13 +21,19 @@ A single-player word tile game played against the computer on a 15×15 board.
 
 2. Open `http://localhost:8080` in your browser.
 
-3. Click a tile in your rack to select it, then click an empty board cell to place it.
-   Click a placed tile on the board to return it to your rack.
+3. Click a tile in your rack to select it, then click an empty board cell to place it —
+   or drag tiles from the rack onto the board.
+   With no rack tile selected, clicking another empty cell moves your most recently
+   placed tile there.
 
-4. Click **Shuffle** to rearrange your rack tiles.
-   Click **Recall** to take back all tiles you placed this turn.
+4. Click **Shuffle Rack** to rearrange your rack tiles.
+   Click **Recall Tiles** to take back all tiles you placed this turn.
+   Click **Play Lifeline** (once per game) to have the computer play your best move for you.
+   Click **Swap Tiles** (needs 7+ tiles in the bag) to exchange tiles: select
+   the ones to give up, then confirm. An exchange scores nothing and uses your turn.
    Click **Play Word** to submit your move.
-   Click **Pass** to skip your turn.
+   To pass, click **Play Word** with no tiles placed and confirm.
+   Six consecutive scoreless turns (passes or exchanges) end the game.
 
 5. The first word must cover the center star (★).
    All words formed — including cross-words — must be valid.
@@ -44,4 +50,87 @@ A single-player word tile game played against the computer on a 15×15 board.
 
 ## Word List
 
-The game uses the ENABLE word list, which is in the public domain (~173,000 words).
+The game uses an open-source, public-domain word list, plus a small house
+patch of common modern words it omits. The additions are our own editorial
+selection — not a copy of any copyrighted tournament word list.
+
+The list ships only gzipped (`words.txt.gz`, ~4× smaller than plain text).
+The browser inflates it client-side with `DecompressionStream`, and the
+Node tools decompress it with `zlib`. To edit the list, unzip it, change
+the words, and re-zip:
+
+```bash
+gzip -dk words.txt.gz            # -> words.txt
+# edit words.txt (keep it sorted: LC_ALL=C sort -u)
+gzip -9 -f words.txt && rm -f words.txt   # -> words.txt.gz
+```
+
+## Comparing Engine Versions
+
+`tools/match.js` plays two versions of the move engine against each other
+headlessly (Node.js, no browser needed) and reports wins, average score,
+average time per move for each version, and average moves per game.
+
+```bash
+# Current engine against an older revision, 10 mirrored pairs (20 games):
+git show <rev>:game.js > /tmp/game-old.js
+node tools/match.js --a game.js --b /tmp/game-old.js --pairs 10
+
+# Options: --pairs N (default 3), --seed S (default 1),
+#          --jobs J (parallel games, default = CPUs, max 4),
+#          --verbose (sequential, logs every move)
+```
+
+Matches are fair: each pair plays one seeded bag shuffle twice with the
+seats swapped ("color swap"), so both engines get the identical starting
+tiles and draw order from each seat, and the same base seed always
+reproduces the same match. The engines are deterministic, so an A-vs-A
+match produces exactly mirrored scores — a quick way to sanity-check the
+harness itself.
+
+If a `leaves.js` sits next to an engine file, the harness loads it as
+that engine's leave model — an engine version and its weights travel as
+a pair, so put each version being compared in its own directory.
+
+## Rack-Leave Model
+
+The engine picks the move maximizing `score + value(tiles kept)` rather
+than raw score, so it stops dumping blanks and S's for marginal points
+or keeping unplayable racks. The weights live in `leaves.js`: a value
+per letter plus a value per unordered letter pair (same-letter pairs
+encode duplicate penalties, and synergies like QU emerge as ordinary
+pair weights). They are trained by regression on seeded self-play data:
+
+```bash
+node tools/train-leaves.js            # records new samples, refits leaves.js
+# Options: --samples N --games G --seed S --jobs J --out FILE --data FILE
+```
+
+Every sampled evaluation is retained in `data/leave-samples.jsonl`
+(one `{"l":"<leave>","y":<score>}` line each, with `{"meta":...}` run
+markers), because the engine evaluations are the expensive part of
+training. That makes iteration cheap:
+
+```bash
+node tools/train-leaves.js --fit-only       # refit from recorded data, < 1 s
+node tools/train-leaves.js --record-only    # grow the dataset
+```
+
+Use `--fit-only` after changing leave features or the regression; a
+normal run appends new samples and refits on the whole file. Each run
+seeds itself randomly (so repeated runs never append duplicate rows) and
+stores the seed it used in the data file's meta line — pass `--seed`
+only to reproduce a past run.
+
+The leave bonus fades out as the bag empties (kept tiles have no future
+with nothing left to draw). If `leaves.js` is missing the engine falls
+back to greedy entirely.
+
+## Endgame Search
+
+Once the bag is empty the game is perfect-information — the opponent's
+rack is exactly the unseen tiles — so instead of greedy scoring the
+engine runs a budgeted alpha-beta search over the remaining playout,
+maximizing final margin under the real end rules (going out banks the
+opponent's rack value twice; two consecutive passes strand both racks).
+Width and depth are capped so a decision stays well under a second.
