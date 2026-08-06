@@ -12,14 +12,15 @@ A single-player word tile game played against the computer on a 15×15 board.
 
 ## How to Play
 
-1. Start a local HTTP server in this directory (required for the word list to load):
+1. Open `index.html` in your browser — straight from disk works (the word
+   list falls back to an embedded copy on `file://`). Serving over HTTP
+   works too and downloads slightly less data:
 
    ```bash
-   python3 -m http.server 8080
-   # or: npx serve .
+   python3 -m http.server 8080   # or: npx serve .
    ```
 
-2. Open `http://localhost:8080` in your browser.
+2. If you started a server, open `http://localhost:8080` in your browser.
 
 3. Click a tile in your rack to select it, then click an empty board cell to place it —
    or drag tiles from the rack onto the board.
@@ -63,7 +64,15 @@ the words, and re-zip:
 gzip -dk words.txt.gz            # -> words.txt
 # edit words.txt (keep it sorted: LC_ALL=C sort -u)
 gzip -9 -f words.txt && rm -f words.txt   # -> words.txt.gz
+node tools/build-data-js.js      # refresh the file:// fallback copies
 ```
+
+When `index.html` is opened directly from disk (`file://`), `fetch()`
+cannot read sibling files, so the gzipped assets also ship base64-embedded
+in generated `words.data.js` / `leaves.data.js`, loaded via an injected
+`<script>` tag only when the fetch fails. Over HTTP they are never
+downloaded. Re-run `node tools/build-data-js.js` whenever `words.txt.gz`
+or `leaves.bin.gz` changes.
 
 ## Comparing Engine Versions
 
@@ -96,10 +105,40 @@ a pair, so put each version being compared in its own directory.
 
 The engine picks the move maximizing `score + value(tiles kept)` rather
 than raw score, so it stops dumping blanks and S's for marginal points
-or keeping unplayable racks. The weights live in `leaves.js`: a value
-per letter plus a value per unordered letter pair (same-letter pairs
-encode duplicate penalties, and synergies like QU emerge as ordinary
-pair weights). They are trained by regression on seeded self-play data:
+or keeping unplayable racks. At runtime the values come from the
+superleave table: one equity byte for each of the 914,625 possible
+leaves of up to 6 tiles. The browser downloads the sparse feature
+weights (`leaves-w.txt.gz`, ~21 KB) and assembles the table locally in
+about a second. (Prebuilt `leaves.bin.gz` tables remain the match
+harness's per-directory format — `tools/leave-td.js export` writes
+both.) Seven-tile count vectors (the
+sim horizon evaluates full racks; bag-aware evaluation completes a
+6-tile leave with a projected draw) are valued as the mean of their
+seven drop-one 6-tile leaves from the same table. If no table loads,
+the engine falls back to greedy, leave-blind play.
+
+Tables are trained by online TD self-play and exported:
+
+```bash
+node tools/leave-td.js online-learn --probe-ratio 0.5 --ckpt run.ckpt.json
+# Ctrl-C when converged (the checkpoint saves at every progress tick), then:
+node tools/leave-td.js export --ckpt run.ckpt.json \
+  --out leaves.bin.gz --weights-out leaves-w.txt.gz
+node tools/build-data-js.js      # refresh the file:// fallback copies
+```
+
+The policy plays greedily against itself with the live weights; values
+are hierarchical sub-multiset features (letters, pairs, on up to
+`--maxorder`); the TD bootstrap is damped by `min(1, bagAfterDraw/7)`,
+so every chain ends grounded in realized points; and `--probe-ratio`
+mixes in chained exploring-starts rollouts so holdings the greedy
+policy under-produces (blank co-holds, QU) still get data.
+
+The older linear model (`leaves.js`: per-letter plus per-pair weights)
+is retired from the browser runtime but kept as tooling — it seeds
+`tools/superleave.js build/refine`, and the match harness still loads
+it per-engine so historical engine versions stay comparable. It is
+trained by regression on seeded self-play data:
 
 ```bash
 node tools/train-leaves.js            # records new samples, refits leaves.js
@@ -123,8 +162,7 @@ stores the seed it used in the data file's meta line — pass `--seed`
 only to reproduce a past run.
 
 The leave bonus fades out as the bag empties (kept tiles have no future
-with nothing left to draw). If `leaves.js` is missing the engine falls
-back to greedy entirely.
+with nothing left to draw).
 
 ## Endgame Search
 

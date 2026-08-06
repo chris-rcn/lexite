@@ -166,14 +166,52 @@ async function loadWordList() {
 // The word list ships only gzipped (~450 KB vs ~1.7 MB uncompressed), so it
 // is inflated in the browser with DecompressionStream — supported by every
 // current browser (Chrome/Edge 80+, Firefox 113+, Safari 16.4+).
+// On file:// fetch() can never read sibling files — attempting it only
+// fills the console with CORS errors — so asset loading skips straight
+// to the embedded-script fallbacks there.
+const IS_FILE_URL = typeof location !== 'undefined' && location.protocol === 'file:';
+
 async function fetchWordListText() {
   if (typeof DecompressionStream !== 'function') {
     throw new Error('this browser is too old (needs gzip DecompressionStream)');
   }
-  const resp = await fetch('words.txt.gz');
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  const stream = resp.body.pipeThrough(new DecompressionStream('gzip'));
-  return await new Response(stream).text();
+  if (!IS_FILE_URL) {
+    try {
+      const resp = await fetch('words.txt.gz');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const stream = resp.body.pipeThrough(new DecompressionStream('gzip'));
+      return await new Response(stream).text();
+    } catch (fetchErr) {
+      try {
+        return await (await loadEmbeddedGz('words.data.js', 'WORDS_GZ_B64')).text();
+      } catch (embedErr) {
+        throw new Error(fetchErr.message + ' (fallback: ' + embedErr.message + ')');
+      }
+    }
+  }
+  return await (await loadEmbeddedGz('words.data.js', 'WORDS_GZ_B64')).text();
+}
+
+// Fallback transport for file:// — fetch() cannot read sibling files off
+// disk, but an injected <script> tag can. tools/build-data-js.js generates
+// *.data.js files holding the gzipped assets as base64 globals; this loads
+// one, decodes it, and gunzips it. Returns a Response over the inflated
+// bytes. Served over HTTP the primary fetch succeeds and none of this runs,
+// so the data is never downloaded twice.
+async function loadEmbeddedGz(src, globalName) {
+  if (typeof document === 'undefined') throw new Error('no document (not a browser)');
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('could not load ' + src));
+    document.head.appendChild(s);
+  });
+  const b64 = globalThis[globalName];
+  if (typeof b64 !== 'string') throw new Error(globalName + ' missing from ' + src);
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream);
 }
 
 function showLoadError(err) {
@@ -182,9 +220,10 @@ function showLoadError(err) {
   const msg = document.createElement('div');
   msg.id = 'load-error';
   msg.textContent =
-    'Could not load the word list (words.txt.gz): ' + err.message + '. ' +
-    'The game must be served over HTTP — run e.g. "python3 -m http.server 8080" ' +
-    'in the game directory, then open http://localhost:8080 and reload.';
+    'Could not load the word list: ' + err.message + '. ' +
+    'Check that words.txt.gz and words.data.js sit next to index.html ' +
+    '(regenerate the latter with "node tools/build-data-js.js"), or serve ' +
+    'the directory over HTTP: "python3 -m http.server 8080".';
   container.appendChild(msg);
   enablePlayerControls(false);
 }
@@ -1504,6 +1543,84 @@ function leaveRank(counts) {
 let superTable = null; // Uint8Array of one equity byte per leave, or null
 function installSuperTable(t) { superTable = t; }
 
+// ---- Table assembly from sparse feature weights ---------------------------
+// The weights asset (rank:value pairs for every trained feature, ~20-130 KB
+// gzipped depending on model order) is far smaller than the prebuilt table
+// (~790 KB), so the client downloads weights and assembles the table
+// locally. The assembly mirrors tools/leave-td.js export exactly — same
+// feature evaluation, same 1-byte codec — so a locally built table is
+// byte-identical to an exported one.
+const SL_BINOM = (() => {
+  const B = [];
+  for (let n = 0; n <= 7; n++) { B[n] = []; for (let k = 0; k <= 7; k++) B[n][k] = k > n ? 0 : (k === 0 ? 1 : B[n - 1][k - 1] + B[n - 1][k]); }
+  return B;
+})();
+let SL_WBUF = null;                    // dense weights during a build
+// Value every leave in [from, to) and write its codec byte. The feature
+// recursion visits tile types in leaveRank's canonical order and
+// accumulates the feature rank incrementally (choosing s copies of type t
+// with budget fR adds sum_{v<s} SL_G[t+1][fR-v]). Leaves hold <= 6 tiles,
+// so every sub-multiset is within the feature domain; the empty sub-leaf
+// contributes w[0], which no trainer ever writes, so it adds 0. The
+// accumulator adds features linearly in emission order — the same float
+// addition order as the exporter's valueFromFeatures — so the assembled
+// table is byte-identical to an exported one.
+function fillSuperTableRange(table, from, to) {
+  const w = SL_WBUF, G = SL_G, B = SL_BINOM, cap = SL_CAP;
+  const counts = new Int32Array(27), present = new Int32Array(7);
+  let val = 0;
+  function visit(pi, np, mult, fidx, fR) {
+    if (pi === np) { val += mult * w[fidx]; return; }
+    const t = present[pi], c = counts[t];
+    for (let s = 0, add = 0; s <= c; s++) {
+      visit(pi + 1, np, mult * B[c][s], fidx + add, fR - s);
+      add += G[t + 1][fR - s];
+    }
+  }
+  for (let rank = from; rank < to; rank++) {
+    let idx = rank, R = 6, np = 0;   // unrank into counts
+    for (let i = 0; i < 27; i++) {
+      let v = 0;
+      while (v <= cap[i] && v <= R && idx >= G[i + 1][R - v]) { idx -= G[i + 1][R - v]; v++; }
+      counts[i] = v; if (v > 0) present[np++] = i;
+      R -= v;
+    }
+    val = 0;
+    visit(0, np, 1, 0, 6);
+    const b = Math.round(val / SL_SCALE) + SL_ZERO;
+    table[rank] = b < 0 ? 0 : b > 255 ? 255 : b;
+  }
+}
+function parseSuperWeights(str) {
+  const w = new Float64Array(SL_G[0][6]);
+  for (const part of str.split(',')) {
+    const c = part.indexOf(':');
+    w[+part.slice(0, c)] = +part.slice(c + 1);
+  }
+  return w;
+}
+// Synchronous build (match harness, tests).
+function buildSuperTableFromWeights(str) {
+  SL_WBUF = parseSuperWeights(str);
+  const table = new Uint8Array(SL_G[0][6]);
+  fillSuperTableRange(table, 0, table.length);
+  SL_WBUF = null;
+  return table;
+}
+// Browser build: same bytes, produced in chunks that yield to the event
+// loop so the UI stays responsive during the ~1-2s assembly.
+async function installSuperWeights(str) {
+  SL_WBUF = parseSuperWeights(str);
+  const size = SL_G[0][6];
+  const table = new Uint8Array(size);
+  for (let from = 0; from < size; from += 65536) {
+    fillSuperTableRange(table, from, Math.min(size, from + 65536));
+    await new Promise(r => setTimeout(r, 0));
+  }
+  SL_WBUF = null;
+  installSuperTable(table);
+}
+
 // Headless-only override: an online-learning driver can install a live
 // leave-value function so the move-search policy uses the weights it is
 // currently learning. null in the browser/production build (no effect).
@@ -1513,8 +1630,16 @@ function installLeaveHook(f) { leaveHook = f; }
 // Headless-only: uniform +/- exploration noise added to each candidate's
 // evaluation, so a greedy policy occasionally takes a near-tie alternative
 // and visits a wider set of leaves. 0 in production (deterministic play).
+// The noise is drawn per decision from seededRng(positionHash ^ seed) —
+// the same scheme the simulation uses for its sample worlds — so runs are
+// reproducible from their seed and stay so under any change to candidate
+// enumeration order (no advancing global stream to knock out of sync).
 let evalDither = 0;
-function installEvalDither(d) { evalDither = d; }
+let evalDitherSeed = 0;
+function installEvalDither(d, seed) {
+  evalDither = d;
+  evalDitherSeed = seed === undefined ? 1 : seed >>> 0;
+}
 
 // Bag-aware leave: value a leave by the expectation of leaveValue over the
 // next tile drawn from the unseen pool, rather than the bag-blind table
@@ -1541,15 +1666,36 @@ function ensureFullDist() {
 // on any failure the engine simply keeps using the linear model.
 async function loadSuperTable() {
   if (typeof DecompressionStream !== 'function' || typeof fetch !== 'function') return;
+  if (!IS_FILE_URL) {
+    try {
+      // Sparse feature weights (~21 KB); the table is assembled locally,
+      // byte-identical to a tools/leave-td.js export.
+      const wr = await fetch('leaves-w.txt.gz');
+      if (wr.ok) {
+        const stream = wr.body.pipeThrough(new DecompressionStream('gzip'));
+        await installSuperWeights(await new Response(stream).text());
+        return;
+      }
+    } catch (e) { /* fall through to the embedded copy */ }
+  }
+  // file:// (or the fetch failed) — embedded-script fallback. On any
+  // failure: greedy, leave-blind play.
   try {
-    const resp = await fetch('leaves.bin.gz');
-    if (!resp.ok) return;
-    const stream = resp.body.pipeThrough(new DecompressionStream('gzip'));
-    installSuperTable(new Uint8Array(await new Response(stream).arrayBuffer()));
-  } catch (e) { /* fall back to the linear model */ }
+    const resp = await loadEmbeddedGz('leaves.data.js', 'LEAVES_W_B64');
+    await installSuperWeights(await resp.text());
+  } catch (e) { /* no weights: greedy, leave-blind play */ }
 }
 
 let leaveTables = null;
+
+// True when any leave evaluator is available: the online-learning hook, a
+// superleave table, or the linear model. Gates that enable leave-aware
+// behavior (static scan, exchanges, sim horizon) check this rather than
+// the linear tables specifically, so a table-only build plays leave-aware
+// without leaves.js — leaveValueFromCounts routes to whatever is loaded.
+function leaveModelReady() {
+  return leaveHook !== null || superTable !== null || leaveTables !== null;
+}
 
 function ensureLeaveTables() {
   const W = (typeof LEAVE_WEIGHTS !== 'undefined' && LEAVE_WEIGHTS) ? LEAVE_WEIGHTS : null;
@@ -1579,8 +1725,27 @@ const LEAVE_PRESENT_SCRATCH = new Int32Array(27);
 function leaveValueFromCounts(counts) {
   if (leaveHook) return leaveHook(counts);
   if (superTable) {
-    const r = leaveRank(counts); // -1 for >6 tiles -> fall through to linear
+    const r = leaveRank(counts); // -1 for >6 tiles
     if (r >= 0) return (superTable[r] - SL_ZERO) * SL_SCALE;
+    // 7-tile vectors (sim-horizon racks; 6-tile leaves completed by a
+    // projected draw): drop-one mean over the table. Exact identity: the
+    // mean of the 7 leave-one-out 6-subsets equals the feature value with
+    // order-s terms scaled by (1 - s/7) — every order the table learned,
+    // mildly damped, in the table's own currency. Richer than the linear
+    // fallback, which keeps only orders 1-2 at leaves.js quality.
+    let total = 0;
+    for (let i = 0; i < 27; i++) total += counts[i];
+    if (total === 7) {
+      let sum = 0;
+      for (let i = 0; i < 27; i++) {
+        const c = counts[i];
+        if (c === 0) continue;
+        counts[i] = c - 1;
+        sum += c * (superTable[leaveRank(counts)] - SL_ZERO) * SL_SCALE;
+        counts[i] = c;
+      }
+      return sum / 7;
+    }
   }
   const t = leaveTables;
   if (!t) return 0;
@@ -1606,9 +1771,10 @@ function leaveValueFromCounts(counts) {
 // Bag-aware leave value: E[ leaveValue(leave + one drawn tile) ] over the
 // unseen pool. `counts` is the leave (mutated in place and restored); the
 // pool is fixed for the turn. Model-agnostic — leaveValueFromCounts routes
-// to whichever evaluator is installed. Note: for a 6-tile leave the drawn
-// completion is 7 tiles, outside a superleave table's domain, so those
-// fall back to the linear model inside leaveValueFromCounts.
+// to whichever evaluator is installed. For a 6-tile leave the drawn
+// completion is 7 tiles: with a superleave table loaded those use the
+// drop-one mean over the table (see leaveValueFromCounts); without one
+// they fall back to the linear model.
 function bagAwareLeaveValue(counts, unseen, total) {
   let ev = 0;
   for (let t = 0; t < 27; t++) {
@@ -2018,7 +2184,8 @@ async function scanStaticMoves(rack, onMove) {
   // The kept rack only has a future while there are tiles to draw into —
   // as the bag runs out, selection fades back to raw score.
   const leaveScale = Math.min(1, state.bag.length / 7);
-  const useLeave = leaveScale > 0 && leaveTables !== null;
+  const useLeave = leaveScale > 0 && leaveModelReady();
+  const ditherRng = evalDither ? seededRng(positionHash(rack) ^ evalDitherSeed) : null;
   const rackCounts = new Int32Array(27);
   for (const t of rack) {
     rackCounts[t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65]++;
@@ -2084,7 +2251,7 @@ async function scanStaticMoves(rack, onMove) {
           }
           val += leaveScale * lv;
         }
-        if (evalDither) val += evalDither * (Math.random() * 2 - 1);
+        if (ditherRng) val += evalDither * (ditherRng() * 2 - 1);
         onMove(m, val);
       }
     }
@@ -2251,7 +2418,7 @@ function tileCounts(tiles) {
 // sim only evaluates the chosen keep), so the pool-awareness is not
 // redundant with it. Returns { keep, tiles } or null with no leave model.
 function bestExchangeKeep(rack) {
-  if (!leaveTables) return null;
+  if (!leaveModelReady()) return null;
   const n = rack.length;
   if (n === 0) return null;
   const code = t => t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65;
@@ -2459,11 +2626,11 @@ async function findBestSimMove(rack, cfg) {
 
         let horizon = 0;
         const scaleH = Math.min(1, (state.bag.length - oppDraw) / 7);
-        if (scaleH > 0 && leaveTables) {
+        if (scaleH > 0 && leaveModelReady()) {
           // Fill the leaf eval rack to 6 tiles while the bag is comfortable
           // (>10) so it stays inside the superleave table's <=6 domain;
           // fill completely (7) near the bag end, where the realized rack
-          // matters and the table falls back to the linear model anyway.
+          // matters (7-tile vectors use the table's drop-one mean).
           const target = realBag.length > 10 ? 6 : 7;
           const specMy = Math.min(myDraw, Math.max(0, target - myKept.length));
           const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));

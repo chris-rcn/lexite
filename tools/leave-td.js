@@ -23,6 +23,8 @@
 //   node tools/leave-td.js record --samples N [--out FILE] [--jobs J]
 //   node tools/leave-td.js train  --data FILE [--epochs E] [--lr r] [--l2 x]
 //                                  [--out leaves.bin.gz]
+//   node tools/leave-td.js online-learn [--ckpt FILE] [--probe-ratio R] ...
+//   node tools/leave-td.js export --ckpt FILE [--out FILE.bin.gz]
 'use strict';
 
 const fs = require('fs');
@@ -45,24 +47,27 @@ for (let n = 0; n <= 6; n++) {
 
 // Enumerate every non-empty sub-multiset S of `counts` (|S| in 1..6),
 // calling cb(rankS, multS) where multS = prod_i C(counts_i, S_i).
+// The rank is accumulated incrementally during the recursion: it visits
+// tile types in leaveRank's canonical order, and choosing s copies of type
+// t with remaining budget R contributes sum_{v<s} G[t+1][R-v] — the same
+// terms leaveRank would add, without a full 27-type rescan per feature
+// (the enumeration is the training hot path). Emission order is unchanged.
 let MAXORD = 6; // cap on feature order (sub-multiset size); set by train
 function setMaxOrder(k) { MAXORD = k; }
-const _sub = new Int32Array(NT);
 function eachSubFeature(counts, cb) {
   const present = [];
-  for (let i = 0; i < NT; i++) if (counts[i] > 0) { present.push(i); _sub[i] = 0; }
-  (function rec(pi, size, mult) {
+  for (let i = 0; i < NT; i++) if (counts[i] > 0) present.push(i);
+  (function rec(pi, size, mult, idx, R) {
     if (pi === present.length) {
-      if (size >= 1) cb(SL.leaveRank(_sub), mult, size);
+      if (size >= 1) cb(idx, mult, size);
       return;
     }
     const t = present[pi], c = counts[t], maxS = Math.min(c, MAXORD - size);
-    for (let s = 0; s <= maxS; s++) {
-      _sub[t] = s;
-      rec(pi + 1, size + s, mult * BINOM[c][s]);
+    for (let s = 0, add = 0; s <= maxS; s++) {
+      rec(pi + 1, size + s, mult * BINOM[c][s], idx + add, R - s);
+      add += SL.G[t + 1][R - s];
     }
-    _sub[t] = 0;
-  })(0, 0, 1);
+  })(0, 0, 1, 0, SL.MAX_LEAVE);
 }
 
 function valueFromFeatures(counts, w) {
@@ -76,6 +81,39 @@ function buildTable(w) {
   const table = new Uint8Array(SIZE);
   for (let r = 0; r < SIZE; r++) table[r] = SL.encodeValue(valueFromFeatures(SL.leaveUnrank(r), w));
   return table;
+}
+
+// ---- export: online-learn checkpoint -> deployable superleave table -------
+// The checkpoint's sparse feature weights are exactly the vector buildTable
+// consumes, so exporting is: densify, evaluate every leave, quantize, gzip.
+// Values outside the 1-byte codec's range clip to its rails (deep-junk
+// leaves sit near the floor), so the clip count is reported.
+function exportTable(opts) {
+  const st = JSON.parse(fs.readFileSync(opts.ckpt, 'utf8'));
+  const w = new Float64Array(SIZE);
+  for (const part of st.w.split(',')) { const c = part.indexOf(':'); w[+part.slice(0, c)] = +part.slice(c + 1); }
+  const lo = SL.decodeValue(0), hi = SL.decodeValue(255);
+  const table = new Uint8Array(SIZE);
+  let clipLo = 0, clipHi = 0;
+  for (let r = 0; r < SIZE; r++) {
+    const v = valueFromFeatures(SL.leaveUnrank(r), w);
+    if (v < lo) clipLo++; else if (v > hi) clipHi++;
+    table[r] = SL.encodeValue(v);
+  }
+  const gz = zlib.gzipSync(Buffer.from(table.buffer), { level: 9 });
+  fs.writeFileSync(opts.out, gz);
+  if (opts.weightsOut) {
+    const wgz = zlib.gzipSync(Buffer.from(st.w), { level: 9 });
+    fs.writeFileSync(opts.weightsOut, wgz);
+    console.log(`Wrote ${opts.weightsOut} (${(wgz.length / 1024).toFixed(0)} KB gzip, ${st.w.split(',').length} features) — client assembles the table from these`);
+  }
+  console.log(`Wrote ${opts.out} (${(gz.length / 1024).toFixed(0)} KB gzip) from ${opts.ckpt} (games ${st.games}, trans ${st.trans})`);
+  console.log(`  codec range [${lo.toFixed(1)}, ${hi.toFixed(1)}], clipped ${clipLo} low + ${clipHi} high of ${SIZE}`);
+  console.log('  leave    raw     table');
+  for (const s of ['S', '?', 'EE', 'QU', 'ER', 'AEINRS', 'UUVWII']) {
+    const counts = SL.leaveStringToCounts(s);
+    console.log(`  ${s.padEnd(7)}${valueFromFeatures(counts, w).toFixed(2).padStart(7)}${SL.decodeValue(table[SL.leaveRank(counts)]).toFixed(2).padStart(9)}`);
+  }
 }
 
 // Seed a feature vector from the linear model: order-1 features = letter
@@ -315,21 +353,29 @@ async function onlineLearn(opts) {
     // letter's count can reach 7 as the BINOM[c][s] multiplicity coefficient.
     // Ranked sub-leaves stay <=MAXORD tiles, so only this coefficient needs it.
     const BINOM = []; for (let n=0;n<=7;n++){BINOM[n]=[];for(let k=0;k<=7;k++)BINOM[n][k]=k>n?0:(k===0?1:BINOM[n-1][k-1]+BINOM[n-1][k]);}
-    const __W = new Float64Array(SIZE), _sub = new Int32Array(NT);
+    const __W = new Float64Array(SIZE);
+    // Rank accumulated incrementally during the recursion (which visits tile
+    // types in leaveRank's canonical order): s copies of type t at budget R
+    // contribute sum_{v<s} SL_G[t+1][R-v], exactly leaveRank's terms without
+    // a per-feature 27-type rescan. Emission order — and therefore the float
+    // accumulation order of every value — is unchanged.
     function each(counts, cb){
-      const present=[]; for(let i=0;i<NT;i++) if(counts[i]>0){present.push(i);_sub[i]=0;}
-      (function rec(pi,size,mult){
-        if(pi===present.length){ if(size>=1) cb(leaveRank(_sub), mult); return; }
+      const present=[]; for(let i=0;i<NT;i++) if(counts[i]>0) present.push(i);
+      (function rec(pi,size,mult,idx,R){
+        if(pi===present.length){ if(size>=1) cb(idx, mult); return; }
         const t=present[pi], c=counts[t], maxS=Math.min(c, MAXORD-size);
-        for(let s=0;s<=maxS;s++){ _sub[t]=s; rec(pi+1,size+s,mult*BINOM[c][s]); }
-        _sub[t]=0;
-      })(0,0,1);
+        for(let s=0,add=0;s<=maxS;s++){
+          rec(pi+1,size+s,mult*BINOM[c][s],idx+add,R-s);
+          add += SL_G[t+1][R-s];
+        }
+      })(0,0,1,0,6);
     }
     const lcBuf=new Int32Array(NT), rcBuf=new Int32Array(NT);
     const fill=(buf,s)=>{ buf.fill(0); for(const ch of s) buf[ch==='?'?26:ch.charCodeAt(0)-65]++; };
     // in-realm leave value used by the move search (no membrane crossing)
     installLeaveHook((counts)=>{ let v=0; each(counts,(rank,mult)=>{v+=mult*__W[rank];}); return v; });
     const rankBuf=new Int32Array(64), multBuf=new Float64Array(64);
+    let __wSum=0, __wCnt=0;                         // |w| accumulated per update event since last __wStats
     // one TD update per transition; l,r are leave strings
     globalThis.__tdUpdate=(lStr,points,rStr,b,lr,gamma)=>{
       fill(rcBuf,rStr); let Vr=0; each(rcBuf,(rank,mult)=>{Vr+=mult*__W[rank];});
@@ -337,12 +383,15 @@ async function onlineLearn(opts) {
       each(lcBuf,(rank,mult)=>{rankBuf[m]=rank;multBuf[m]=mult;V+=mult*__W[rank];norm+=mult*mult;m++;});
       const err=(points-b)+gamma*Vr-V;
       const step=lr*err/(norm+1);
-      for(let j=0;j<m;j++) __W[rankBuf[j]]+=step*multBuf[j];
+      for(let j=0;j<m;j++){ const w=__W[rankBuf[j]]+=step*multBuf[j]; __wSum+=w<0?-w:w; __wCnt++; }
       return err;                                   // TD error, for tracking
     };
     globalThis.__spotValue=(s)=>{ fill(lcBuf,s); let v=0; each(lcBuf,(rank,mult)=>{v+=mult*__W[rank];}); return v; };
-    // weight-magnitude health: avg |w| over touched features, plus max (divergence canary)
-    globalThis.__wStats=()=>{ let s=0,n=0,mx=0; for(let i=0;i<SIZE;i++){ const a=__W[i]<0?-__W[i]:__W[i]; if(a>0){ s+=a; n++; if(a>mx)mx=a; } } return { avg:n?s/n:0, nz:n, max:mx }; };
+    // weight-magnitude health: avg |w| per update event since the last call —
+    // a weight updated twice contributes twice, so the average is weighted by
+    // how often each feature is actually exercised; nz counts all nonzero
+    // weights and max is the global divergence canary.
+    globalThis.__wStats=()=>{ let nz=0,mx=0; for(let i=0;i<SIZE;i++){ const a=__W[i]<0?-__W[i]:__W[i]; if(a>0){ nz++; if(a>mx)mx=a; } } const avg=__wCnt?__wSum/__wCnt:0; __wSum=0; __wCnt=0; return { avg:avg, nz:nz, max:mx }; };
     // checkpoint: export/import the (sparse) nonzero weights as a compact string
     globalThis.__exportW=()=>{ let out=''; for(let i=0;i<SIZE;i++){ if(__W[i]!==0){ const r=Math.round(__W[i]*1e4)/1e4; if(r!==0) out += (out?',':'') + i + ':' + r; } } return out; };
     globalThis.__importW=(s)=>{ if(!s) return; for(const part of s.split(',')){ const c=part.indexOf(':'); __W[+part.slice(0,c)] = +part.slice(c+1); } };
@@ -350,59 +399,164 @@ async function onlineLearn(opts) {
   const sb = engine._sandbox;
   // exploration: add +/- dither to each candidate move's evaluation so the
   // greedy policy visits a wider variety of leaves.
-  if (opts.dither) engine.evalInRealm(`installEvalDither(${opts.dither});`);
-  const lr = opts.lr, gamma = opts.gamma, betaB = opts.betaB;
-  // Error EMAs decay far slower than b: we log every ~1150 transitions, so a
-  // b-speed (~50-transition) window would just sample noise. ~3k-transition
-  // window (~3 log ticks) smooths the noise while staying responsive.
-  // Checkpointed, so the window survives recycles instead of resetting to 0.
+  if (opts.dither) engine.evalInRealm(`installEvalDither(${opts.dither}, ${opts.seed});`);
+  const lr = opts.lr, betaB = opts.betaB;
+  // Slow EMAs, all checkpointed so they survive recycles instead of
+  // resetting. b (betaB, ~500-transition window) tracks the policy's mean
+  // move score, which drifts only as the policy improves — a fast window
+  // would just inject sampling noise into every TD target via (points - b).
+  // The error EMAs (~3k window) smooth the noisy TD residuals while staying
+  // responsive.
+  // The logged signal is eAbs/eRef — TD error relative to the zero-model
+  // residual |points - b|. It starts at 1.0 (zero weights explain nothing)
+  // and falls toward the irreducible-noise floor as the leave model learns;
+  // it is lr- and order-independent, so runs are directly comparable.
   const betaErr = 0.0003;
   let b = 0, nTrans = 0, nGames = 0;                 // b = running average move points (baseline)
-  let eAbs = 0, eSq = 0;                             // running EMA of |TD err| and err^2
+  let eAbs = 0, eRef = 0;                            // EMA of |TD err| and of |points - b|
   // resume from a checkpoint if one exists (survives container restarts)
-  if (opts.ckpt && fs.existsSync(opts.ckpt)) {
+  const resuming = opts.ckpt && fs.existsSync(opts.ckpt);
+  if (resuming) {
     const st = JSON.parse(fs.readFileSync(opts.ckpt, 'utf8'));
     sb.__importW(st.w); b = st.b; nGames = st.games; nTrans = st.trans;
-    if (st.eAbs !== undefined) { eAbs = st.eAbs; eSq = st.eSq; }  // older ckpts lack these
+    if (st.eRef !== undefined) { eAbs = st.eAbs; eRef = st.eRef; }  // older ckpts lack these; restart the pair together
     console.log(`resumed from ${opts.ckpt}: games ${nGames}, trans ${nTrans}, b=${b.toFixed(1)}`);
+    if (process.argv.includes('--init-blank')) console.log('--init-blank ignored: weights come from the checkpoint');
+  } else if (opts.initBlank) {
+    // --init-blank V: warm-start the blank's order-1 weight at V (the measured
+    // equilibrium is ~24). The blank is the one tile whose value bootstraps
+    // pathologically slowly from zero — it is rare, near-always playable, so
+    // keep-transitions barely exist until its value grows — and a zero start
+    // also lets blank-rack outcomes over-credit co-held letters for thousands
+    // of games until the blank claims its share back. Fresh starts only.
+    const c = new Int32Array(NT); c[26] = 1;
+    sb.__importW(SL.leaveRank(c) + ':' + opts.initBlank);
   }
+  // Display + checkpoint cadence: first after 10 games, then the period grows
+  // ×1.5 per tick — dense feedback early on (and after a resume), cheap later.
+  // Capped so long runs still tick (and checkpoint) at least every 10k games,
+  // bounding what a mid-interval Ctrl-C can lose.
+  const MAX_LOG_PERIOD = 10000;
+  let logPeriod = 10, nextLogAt = nGames + logPeriod;
   const saveCkpt = () => {                            // atomic write (tmp + rename)
     if (!opts.ckpt) return;
-    fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, b, eAbs, eSq, w: sb.__exportW() }));
+    fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, b, eAbs, eRef, w: sb.__exportW() }));
     fs.renameSync(opts.ckpt + '.tmp', opts.ckpt);
   };
   const prev = ['', ''];
-  const spot = () => ['S', '?', 'EE', 'QU', 'ER', 'AEINRS'].map(s => `${s}=${sb.__spotValue(s).toFixed(2)}`).join(' ');
-  const onTurn = (seat, type, points, leftover) => {
+  const spot = () => ['S', '?', 'EE', 'QU', 'ER', 'AEINRS', 'UUVWII'].map(s => `${s}=${sb.__spotValue(s).toFixed(2).padStart(6)}`).join(' ');
+  const onTurn = (seat, type, points, leftover, bagN) => {
     // play and exchange both end with a valid kept leave (points=0 for an
     // exchange); only a pass keeps the full 7-tile rack (out of domain, no
     // draw), so it breaks the chain.
     if (type === 'pass') { prev[seat] = undefined; return; }
     const r = sortLeave(leftover);
     if (prev[seat] !== undefined) {                 // TD update on l = prev[seat] (leave held at turn start)
-      const err = sb.__tdUpdate(prev[seat], points, r, b, lr, gamma);
+      // The bootstrap weight is min(1, bagAfterDraw/7): the kept leave's
+      // future consists of drawing from what the bag holds after this turn's
+      // refill (the same post-draw horizon the sim damps by via scaleH). On
+      // the move whose draw empties the bag the weight is exactly 0, so
+      // every chain ends grounded in realized points — a tile hoarded into
+      // the fade pays its stranding cost instead of inflating through
+      // never-reconciled hold transitions. No other discount: the game is
+      // finite and scored by undiscounted final margin, so leave values must
+      // share a currency with move points (they are summed in move selection).
+      const err = sb.__tdUpdate(prev[seat], points, r, b, lr, Math.min(1, bagN / 7));
       eAbs += betaErr * (Math.abs(err) - eAbs);
-      eSq += betaErr * (err * err - eSq);
-      b += betaB * (points - b);
+      eRef += betaErr * (Math.abs(points - b) - eRef);
+      // exact running mean until the EMA window fills, then EMA — so a fresh
+      // start snaps to the true mean instead of ramping up slowly from 0
+      b += Math.max(betaB, 1 / (nTrans + 1)) * (points - b);
       nTrans++;
     }
     prev[seat] = r;
   };
   const t0 = Date.now();
-  console.log(`online learning from ZERO weights (in-realm): lr=${lr} gamma=${gamma} order=${opts.maxorder}`);
+  console.log(`lr=${lr} order=${opts.maxorder} dither=${opts.dither} init-blank=${opts.initBlank} probe-ratio=${opts.probeRatio} seed=${opts.seed} ckpt=${opts.ckpt || 'none'}`);
+  // Synthetic-probe exploration (exploring starts): with --probe-ratio R,
+  // fraction R of all TD updates come from probes — chained greedy rollouts
+  // started from a leave that is sampled (from the live pool, supply-
+  // weighted) instead of policy-chosen, so features the policy does not yet
+  // believe in (rare synergies like QU) get data at a controlled rate
+  // instead of waiting on a policy-feedback bootstrap. The __bestMove
+  // bridge resets realm state per call, so probe searches leave the real
+  // game untouched. Probe errors update weights only — b and the error
+  // EMAs stay pure real-policy metrics. Chain mechanics: see PROBE_CHAIN.
+  if (!(opts.probeRatio >= 0 && opts.probeRatio < 1)) { console.error('--probe-ratio must be in [0, 1)'); process.exit(2); }
+  const probesPerTurn = opts.probeRatio / (1 - opts.probeRatio);
+  // Each probe is a PROBE_CHAIN-step greedy rollout, not a single transition.
+  // One-step probes pumped the leave-size gauge (uniform +c per tile): their
+  // start leave (random, mean size ~3) and bootstrap leave (greedy-kept,
+  // mean ~4.5) came from different size distributions, and that asymmetry
+  // leaked into the softest direction of the model. In a chain the interior
+  // telescopes — each step's bootstrap leave is the next step's grounded
+  // start — so only the chain's two boundary leaves remain exposed, cutting
+  // the injection by the chain length. Chains run on a private board copy
+  // with moves applied (successive steps see realistic spot consumption)
+  // and the pool depletes as tiles are played, so late steps get the same
+  // fading damp as real late-game transitions; a pass or an exhausted pool
+  // ends the chain, mirroring real chain breaks and the bag=0 truncation.
+  const PROBE_CHAIN = 3;
+  const chainsPerTurn = probesPerTurn / PROBE_CHAIN;  // keeps probe UPDATES at ratio R
+  const probeRng = mulberry32((opts.seed ^ 0x9e3779b9) >>> 0);
+  let nProbes = 0;
+  const runProbe = async (board, bag, isFirstMove, rack) => {
+    const pool = [...bag, ...rack.map(t => (t.isBlank ? '?' : t.letter))];
+    const draw = n => { const out = []; while (out.length < n && pool.length) out.push(pool.splice(Math.floor(probeRng() * pool.length), 1)[0]); return out; };
+    const bcopy = board.map(row => row.slice());
+    let leave = draw(Math.floor(probeRng() * 7));               // random start leave, size 0..6
+    let first = isFirstMove;
+    for (let step = 0; step < PROBE_CHAIN; step++) {
+      const rackTiles = leave.concat(draw(7 - leave.length)).map(ch => ({ letter: ch, isBlank: ch === '?' }));
+      const bagProbe = pool.length;
+      const move = await engine.bestMove(bcopy, rackTiles, first, bagProbe, 0, 0);
+      if (!move) break;                                         // pass ends the chain
+      const kept = rackTiles.slice();
+      for (const u of (move.exchange ? move.tiles : move.placements)) {
+        const idx = kept.findIndex(t => (u.isBlank ? t.isBlank : (!t.isBlank && t.letter.toLowerCase() === u.letter.toLowerCase())));
+        if (idx !== -1) kept.splice(idx, 1);
+      }
+      let points = 0, drawn = 0;
+      if (move.exchange) {
+        for (const t of move.tiles) pool.push(t.isBlank ? '?' : t.letter);  // discards return to the pool
+      } else {
+        points = move.score;
+        drawn = Math.min(bagProbe, rackTiles.length - kept.length);
+        for (const p of move.placements) bcopy[p.row][p.col] = { letter: p.letter, isBlank: p.isBlank, displayLetter: p.letter };
+        first = false;
+      }
+      sb.__tdUpdate(leave.slice().sort().join(''), points, sortLeave(kept), b, lr, Math.min(1, Math.max(0, bagProbe - drawn) / 7));
+      nProbes++;
+      if (bagProbe - drawn <= 0) break;                         // pool exhausted: chain fully grounded
+      leave = kept.map(t => (t.isBlank ? '?' : t.letter));      // bootstrap leave becomes next grounded start
+    }
+  };
+  // Truncate each game when the bag empties, before the first endgame-search
+  // move: the solver dominates wall-clock but its transitions carry no special
+  // training signal (rewards are per-move points; end-of-game rack adjustments
+  // never reach onTurn), so skipping it buys games/hour at no cost in signal.
+  const onPos = async (board, bag, isFirstMove, rack) => {
+    if (bag.length === 0) return false;
+    let p = chainsPerTurn;
+    for (; p >= 1; p--) await runProbe(board, bag, isFirstMove, rack);
+    if (p > 0 && probeRng() < p) await runProbe(board, bag, isFirstMove, rack);
+    return true;
+  };
   while (nGames < opts.games) {
     const bag = buildSeededBag(mulberry32(opts.seed * 7919 + nGames + 1));
     prev[0] = ''; prev[1] = '';
-    await playGame([engine, engine], bag, false, '', null, onTurn);
+    await playGame([engine, engine], bag, false, '', onPos, onTurn);
     nGames++;
-    if (nGames % opts.logEvery === 0) {
+    if (nGames >= nextLogAt) {
       const st = sb.__wStats();
-      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)} | ${((Date.now() - t0) / 1000).toFixed(0)}s | b=${b.toFixed(1)} | |err|=${eAbs.toFixed(2)} rmse=${Math.sqrt(eSq).toFixed(2)} | avg|w|=${st.avg.toFixed(3)} nz=${st.nz} max=${st.max.toFixed(1)} | ${spot()}`);
+      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)}${opts.probeRatio > 0 ? ` | probes ${String(nProbes).padStart(7)}` : ''} | ${((Date.now() - t0) / 1000).toFixed(0).padStart(5)}s | b=${b.toFixed(1)} | errRatio=${eRef > 0 ? (eAbs / eRef).toFixed(3) : '  ---'} | avg|w|=${st.avg.toFixed(3)} nz=${String(st.nz).padStart(6)} max=${st.max.toFixed(1).padStart(4)} | ${spot()}`);
+      saveCkpt();
+      logPeriod = Math.min(logPeriod * 1.5, MAX_LOG_PERIOD);
+      nextLogAt = nGames + logPeriod;
     }
-    if (nGames % opts.saveEvery === 0) saveCkpt();
   }
   saveCkpt();
-  console.log(`done: ${nGames} games, ${nTrans} transitions`);
+  console.log(`done: ${nGames} games, ${nTrans} transitions${nProbes ? `, ${nProbes} probes` : ''}`);
 }
 
 function main() {
@@ -433,22 +587,29 @@ function main() {
     dumpw: (process.argv.indexOf('--dumpw') !== -1) ? path.resolve(process.cwd(), arg('--dumpw', 'weights.txt')) : null,
     out: path.resolve(process.cwd(), arg('--out', 'leaves.bin.gz')),
   });
+  if (cmd === 'export') {
+    const ckpt = arg('--ckpt', 'online.ckpt.json');
+    return exportTable({
+      ckpt: path.resolve(process.cwd(), ckpt),
+      out: path.resolve(process.cwd(), arg('--out', path.basename(ckpt).replace(/\.ckpt\.json$/, '') + '.bin.gz')),
+      weightsOut: process.argv.includes('--weights-out') ? path.resolve(process.cwd(), arg('--weights-out', 'leaves-w.txt.gz')) : null,
+    });
+  }
   if (cmd === 'online-learn') return onlineLearn({
     games: process.argv.includes('--games') ? parseInt(arg('--games'), 10) : Infinity, // unlimited unless capped
 
-    lr: parseFloat(arg('--lr', '0.05')),
-    gamma: parseFloat(arg('--gamma', '1.0')),
-    maxorder: parseInt(arg('--maxorder', '6'), 10),
-    betaB: parseFloat(arg('--betaB', '0.02')),
-    dither: parseFloat(arg('--dither', '0.1')),
+    lr: parseFloat(arg('--lr', '0.001')),
+    maxorder: parseInt(arg('--maxorder', '5'), 10),
+    betaB: parseFloat(arg('--betaB', '0.002')),
+    dither: parseFloat(arg('--dither', '0')),
+    initBlank: parseFloat(arg('--init-blank', '20')),
+    probeRatio: parseFloat(arg('--probe-ratio', '0')),
     // default to a non-deterministic seed (time + pid, so concurrent launches
     // differ); pass --seed explicitly to reproduce or to compare across LRs.
     seed: parseInt(arg('--seed', String(((Date.now() ^ (process.pid * 2654435761)) >>> 0) % 2000000000)), 10),
-    logEvery: parseInt(arg('--log-every', '200'), 10),
-    saveEvery: parseInt(arg('--save-every', '100'), 10),
     ckpt: (process.argv.indexOf('--ckpt') !== -1) ? path.resolve(process.cwd(), arg('--ckpt', 'online.ckpt.json')) : null,
   });
-  console.error('usage: selftest | record | train | online-learn'); process.exit(2);
+  console.error('usage: selftest | record | train | online-learn | export'); process.exit(2);
 }
 
 if (require.main === module) main();

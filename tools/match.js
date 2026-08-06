@@ -133,6 +133,10 @@ function loadEngine(file, words, opts = {}) {
   // overrides the linear leave model, matching what the browser fetches.
   const superPath = path.join(path.dirname(path.resolve(file)), 'leaves.bin.gz');
   const superBytes = fs.existsSync(superPath) ? zlib.gunzipSync(fs.readFileSync(superPath)) : null;
+  // Sparse feature weights (leaves-w.txt.gz) take precedence: the engine
+  // assembles the table in-realm, byte-identical to a prebuilt one.
+  const superWPath = path.join(path.dirname(path.resolve(file)), 'leaves-w.txt.gz');
+  const superWStr = fs.existsSync(superWPath) ? zlib.gunzipSync(fs.readFileSync(superWPath)).toString() : null;
   // Minimal browser-global stubs so game.js evaluates headlessly. All DOM
   // access lives inside functions the harness never calls.
   const sandbox = {
@@ -157,13 +161,16 @@ function loadEngine(file, words, opts = {}) {
   // Pass the table as a latin1 string (one membrane value); the context
   // rebuilds an in-realm Uint8Array so per-lookup reads stay fast.
   sandbox.__SUPERLEAVE_STR = superBytes ? superBytes.toString('latin1') : '';
+  sandbox.__SUPERLEAVE_WSTR = superWStr || '';
   vm.runInContext(`
     state.wordSet = new Set(__WORDS);
     state.wordsByLength = Array.from({length: 16}, () => []);
     for (const w of state.wordSet) {
       if (w.length <= 15) state.wordsByLength[w.length].push(w);
     }
-    if (__SUPERLEAVE_STR && typeof installSuperTable === 'function') {
+    if (__SUPERLEAVE_WSTR && typeof buildSuperTableFromWeights === 'function') {
+      installSuperTable(buildSuperTableFromWeights(__SUPERLEAVE_WSTR));
+    } else if (__SUPERLEAVE_STR && typeof installSuperTable === 'function') {
       const s = __SUPERLEAVE_STR, t = new Uint8Array(s.length);
       for (let i = 0; i < s.length; i++) t[i] = s.charCodeAt(i);
       installSuperTable(t);
@@ -265,11 +272,14 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
     if (marginLowbag === null && bag.length < 8) marginLowbag = scores[0] - scores[1];
     if (marginBag1 === null && bag.length === 1) marginBag1 = scores[0] - scores[1];
     if (marginEndgame === null && bag.length === 0) marginEndgame = scores[0] - scores[1];
-    if (onPosition) onPosition(board, bag, isFirstMove, racks[seat]);
+    // onPosition may be async and may return false to abort the game before
+    // this move is chosen (e.g. online-learn truncates at bag=0 to skip the
+    // endgame solver, and runs synthetic probe evaluations per turn).
+    if (onPosition && (await onPosition(board, bag, isFirstMove, racks[seat])) === false) { reason = 'truncated'; break; }
     const move = await engines[seat].bestMove(board, racks[seat], isFirstMove, bag.length, scores[seat], scores[1 - seat]);
     moves++;
     if (!move) {
-      if (onTurn) onTurn(seat, 'pass', 0, null);
+      if (onTurn) onTurn(seat, 'pass', 0, null, bag.length);
       if (verbose) console.log(`  [${label}] seat${seat}: pass`);
       if (++scoreless >= 6) { reason = 'passes'; break; }
     } else if (move.exchange) {
@@ -283,12 +293,13 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
       }
       // The kept tiles (rack minus discards, pre-draw) are a valid leave, so
       // an exchange is a real 0-reward transition, just like a play.
-      if (onTurn) onTurn(seat, 'exchange', 0, racks[seat].slice());
+      const kept = racks[seat].slice();
       draw(seat); // replacements come out before the discards return
       // Discards go to the bottom of the bag (drawn last): deterministic
       // without an RNG, and they cannot be immediately redrawn — the
       // practical effect of a shuffle at these bag depths.
       for (const t of removed) bag.unshift(t.isBlank ? '?' : t.letter);
+      if (onTurn) onTurn(seat, 'exchange', 0, kept, bag.length); // bag after draw + returns
       if (verbose) console.log(`  [${label}] seat${seat}: exchanged ${removed.length}`);
       if (++scoreless >= 6) { reason = 'passes'; break; }
     } else {
@@ -303,9 +314,14 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
       }
       scores[seat] += move.score;
       isFirstMove = false;
-      if (onTurn) onTurn(seat, 'play', move.score, racks[seat].slice()); // leftover leave, pre-draw
-      if (verbose) console.log(`  [${label}] seat${seat}: ${move.word.toUpperCase()} +${move.score} (total ${scores[seat]})`);
+      // The leave is the rack pre-draw, but the bag count reported with it is
+      // post-draw: it is what remains to draw into that leave going forward,
+      // which is the horizon a TD consumer should damp its bootstrap by
+      // (0 on the move whose draw empties the bag — a grounded chain end).
+      const leftover = racks[seat].slice();
       draw(seat);
+      if (onTurn) onTurn(seat, 'play', move.score, leftover, bag.length);
+      if (verbose) console.log(`  [${label}] seat${seat}: ${move.word.toUpperCase()} +${move.score} (total ${scores[seat]})`);
       if (bag.length === 0 && racks[seat].length === 0) { reason = 'out'; break; }
     }
     if (moves > 200) { reason = 'move-limit'; break; } // safety net
@@ -368,13 +384,14 @@ function runWorker(spec) {
   });
 }
 
-async function runPool(specs, jobs) {
+async function runPool(specs, jobs, onResult) {
   const results = new Array(specs.length);
   let next = 0;
   async function drain() {
     while (next < specs.length) {
       const i = next++;
       results[i] = await runWorker(specs[i]);
+      if (onResult) onResult(results[i]);
     }
   }
   await Promise.all(Array.from({ length: Math.min(jobs, specs.length) }, drain));
@@ -413,15 +430,31 @@ async function main() {
   }
 
   const t0 = Date.now();
+  // Live cumulative summary on an exponential schedule (first after 20
+  // games, period ×1.5): long matches show trend and pace mid-run without
+  // a line per game. Games finish out of order under --jobs, so the
+  // summary counts completions, not pair indices.
+  let done = 0, liveA = 0, liveB = 0, liveTies = 0, liveMargin = 0;
+  let tickPeriod = 20, tickAt = 20;
+  const onResult = r => {
+    done++; liveMargin += r.aScore - r.bScore;
+    if (r.aScore > r.bScore) liveA++; else if (r.bScore > r.aScore) liveB++; else liveTies++;
+    if (done >= tickAt) {
+      console.log(`  [${done}/${specs.length} games] A ${liveA} — B ${liveB}${liveTies ? ` — ${liveTies} ties` : ''} | avg margin ${(liveMargin / done).toFixed(1)} | ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+      tickPeriod *= 1.5; tickAt = done + tickPeriod;
+    }
+  };
   let results;
   if (opts.verbose) {
     results = [];
     for (const spec of specs) {
       const label = `seed ${spec.seed} ${spec.swap ? 'B-first' : 'A-first'}`;
-      results.push(await playSpec(spec, true, label));
+      const r = await playSpec(spec, true, label);
+      results.push(r);
+      onResult(r);
     }
   } else {
-    results = await runPool(specs, opts.jobs);
+    results = await runPool(specs, opts.jobs, onResult);
   }
 
   const totals = {
@@ -438,12 +471,6 @@ async function main() {
     if (r.aScore > r.bScore) totals.A.wins++;
     else if (r.bScore > r.aScore) totals.B.wins++;
     else totals.ties++;
-    if (i % 2 === 1) {
-      const g1 = results[i - 1], g2 = r;
-      const line = g =>
-        `A ${g.aScore} — B ${g.bScore} (${g.aScore > g.bScore ? 'A wins' : g.bScore > g.aScore ? 'B wins' : 'tie'}, ${g.reason})`;
-      console.log(`Pair ${(i + 1) / 2} (seed ${specs[i].seed})  A first: ${line(g1)}  |  B first: ${line(g2)}`);
-    }
   }
 
   const games = specs.length;
