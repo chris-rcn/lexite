@@ -3076,15 +3076,25 @@ function endGame(reason) {
   const playerUnused = state.playerRack.reduce((s,t) => s + letterVal(t.letter, t.isBlank), 0);
   const compUnused   = state.computerRack.reduce((s,t) => s + letterVal(t.letter, t.isBlank), 0);
 
+  // Apply the adjustments and record them in the move history (letters are
+  // revealed — the game is over). Going out banks the opponent's unplayed
+  // tile value twice: once added, once deducted.
+  const letters = r => r.map(t => (t.isBlank ? '?' : t.letter.toUpperCase())).sort().join('');
   if (state.playerRack.length === 0) {
     state.playerScore += compUnused;
     state.computerScore -= compUnused;
+    logEntry(`Computer: −${compUnused} (unplayed tiles: ${letters(state.computerRack)})`, 'computer');
+    logEntry(`You: +${compUnused} (Computer's unplayed tiles)`, 'player');
   } else if (state.computerRack.length === 0) {
     state.computerScore += playerUnused;
     state.playerScore -= playerUnused;
+    logEntry(`You: −${playerUnused} (unplayed tiles: ${letters(state.playerRack)})`, 'player');
+    logEntry(`Computer: +${playerUnused} (your unplayed tiles)`, 'computer');
   } else {
     state.playerScore -= playerUnused;
     state.computerScore -= compUnused;
+    logEntry(`Computer: −${compUnused} (unplayed tiles: ${letters(state.computerRack)})`, 'computer');
+    logEntry(`You: −${playerUnused} (unplayed tiles: ${letters(state.playerRack)})`, 'player');
   }
 
   renderScores();

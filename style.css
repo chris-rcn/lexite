@@ -134,7 +134,7 @@ main {
   flex-direction: column;
   gap: 16px;
   padding: 16px;
-  align-items: flex-start;
+  align-items: center;
   overflow: auto;
 }
 
