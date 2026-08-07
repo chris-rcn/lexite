@@ -2302,6 +2302,30 @@ function erfApprox(x) {
 }
 function normalCdf(z) { return 0.5 * (1 + erfApprox(z / Math.SQRT2)); }
 
+// Margin -> P(win) transform for score-aware ranking away from terminal
+// positions, calibrated by tools/margin-sigma.js over 2000 static
+// self-play games (data/margin-sigma.json). Mover-perspective residuals
+// (final margin minus current standing) show a near-constant tempo drift
+// MU ~ +19 — about half an average move, b/2 — and variance close to
+// linear in the unseen-tile count: sigma^2(bag) = 89.5*bag + 991. So
+// with `margin` the mover-perspective standing at a point where it is
+// the mover's turn: P(win) = Phi((margin + MU) / sigma(bag)).
+const WINPROB_MU = 19;
+// Raw spread: all residual variance from a bag-k standing (opponent rack
+// unknown). Used as the smoothing kernel for terminal-playout win credit,
+// where the width should reflect the across-world spread.
+function sigmaAtBag(bagCount) { return Math.sqrt(89.48 * bagCount + 991.2); }
+// Conditional spread: residual net of the damped leave differential of two
+// KNOWN racks — the width matched to a sampled world's horizon margin,
+// whose predictor already contains that differential. Same per-tile slope
+// as the raw fit (future draws are unexplained by current racks); the
+// intercept drops from 991 to 605 because rack asymmetry was a large part
+// of the "noise".
+function sigmaCondAtBag(bagCount) { return Math.sqrt(86.03 * bagCount + 605.0); }
+function winProbAtBag(margin, bagCount) {
+  return normalCdf((margin + WINPROB_MU) / sigmaCondAtBag(bagCount));
+}
+
 // Play a sampled world to the end of the game after the candidate move:
 // both sides move statically (our measurements put greedy within a point
 // of search at the empty-bag phase, and it is 5x cheaper here), drawing
@@ -2572,11 +2596,17 @@ async function findBestSimMove(rack, cfg) {
   // The stage config already fixes the evaluation mode: lowbag => terminal
   // playout, midgame => 2-ply horizon (the router picks the stage by bag).
   const toTerminal = cfg.mode === 'terminal';
-  // Score-aware terminal play ranks by P(win): the current standing (my score
-  // minus the opponent's; the engine always plays the computer) plus each
-  // playout's exact final margin, scored as a win/loss. Only meaningful once
-  // worlds run to terminal, so it rides on toTerminal.
-  const scoreAware = toTerminal && cfg.scoreAware;
+  // Score-aware ranking by P(win) instead of expected margin. Terminal
+  // stages score each played-out world as a win indicator against the
+  // current standing (sigma -> 0 limit). The 2-ply midgame maps each
+  // world's horizon margin through the calibrated transform winProbAtBag:
+  // Phi's curvature then prices variance by standing — ahead prefers
+  // reply-denying (variance-reducing) moves, behind variance-seeking ones
+  // — though only as far as the 2-ply world spread can see. Units become
+  // probabilities, so the z-based confidence gates still apply, but the
+  // Bayesian overrule's point-calibrated prior (priorSd) does not: use
+  // scoreAware with the default confidence gate, not cfg.bayes.
+  const scoreAware = !!cfg.scoreAware;
   const myScoreMargin = state.computerScore - state.playerScore;
   const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
@@ -2596,11 +2626,16 @@ async function findBestSimMove(rack, cfg) {
           // heuristic, and the leave taper plays no evaluation role.
           const margin = await simPlayoutValue(arm.score, myKept, world, oppSize);
           if (arm.placements) removeFromBoard(arm.placements);
-          // Score-aware: collapse the final margin to a win indicator against
-          // the current standing (ties count as half a win).
+          // Score-aware: smoothed win credit — the playout's exact final
+          // margin through Phi at the calibrated across-world spread for
+          // this bag size, instead of a hard win/loss indicator. With only
+          // 8-10 worlds, Bernoulli indicators carry more ranking noise than
+          // the smoothing bias costs (the indicator variant measured about
+          // -4 pts/game in its A/B). No MU term: a completed playout has
+          // already realized the mover's tempo.
           if (scoreAware) {
             const final = myScoreMargin + margin;
-            vals[ci].push(final > 0 ? 1 : final < 0 ? 0 : 0.5);
+            vals[ci].push(normalCdf(final / sigmaAtBag(realBag.length)));
           } else {
             vals[ci].push(margin);
           }
@@ -2639,7 +2674,15 @@ async function findBestSimMove(rack, cfg) {
           horizon = scaleH *
             (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
         }
-        vals[ci].push(arm.score - rScore + horizon);
+        const dMargin = arm.score - rScore + horizon;
+        if (scoreAware) {
+          // Horizon state: my move and the opponent's reply are played,
+          // it is my turn again — the calibration's reference frame.
+          const bagH = Math.max(0, state.bag.length - oppDraw);
+          vals[ci].push(winProbAtBag(myScoreMargin + dMargin, bagH));
+        } else {
+          vals[ci].push(dMargin);
+        }
         if (arm.placements) removeFromBoard(arm.placements);
       }
 

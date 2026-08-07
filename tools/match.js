@@ -69,6 +69,16 @@ function parseArgs(argv) {
     else if (arg === '--seed') opts.seed = parseInt(argv[++i], 10);
     else if (arg === '--jobs') opts.jobs = parseInt(argv[++i], 10);
     else if (arg === '--static') opts.static = true;
+    // Realm code evaluated in one engine's context after load (e.g.
+    // 'STAGES.bag1.scoreAware = 1') — lets a match A/B two stage configs
+    // of the same engine build.
+    else if (arg === '--a-eval') opts.aEval = argv[++i];
+    else if (arg === '--b-eval') opts.bEval = argv[++i];
+    // Also tally the subset of games with |margin| <= T when the bag first
+    // held <= K tiles (default K=2). Late-stage A/Bs only diverge in close
+    // late games, so the unfiltered tally dilutes their signal ~20:1.
+    else if (arg === '--close') opts.close = parseInt(argv[++i], 10);
+    else if (arg === '--close-bag') opts.closeBag = parseInt(argv[++i], 10);
     else if (arg === '--verbose') opts.verbose = true;
     else if (arg === '--play-one') opts.playOne = argv[++i]; // internal: worker mode
     else { console.error(`Unknown argument: ${arg}`); process.exit(2); }
@@ -264,11 +274,23 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
   // caller can condition on how close the game was entering that phase.
   let marginLowbag = null, marginBag1 = null, marginEndgame = null;
   // marginAtBag[k] = score margin (seat0 - seat1) the first time the bag holds
-  // exactly k tiles (k <= 8), so a caller can isolate/filter on any late bag size.
+  // exactly k tiles (all sizes), and moverAtBag[k] = the seat about to move at
+  // that moment — so a caller can filter on any late bag size (close-game
+  // tallies) or calibrate margin drift/variance by game phase (margin-sigma).
   const marginAtBag = {};
+  const moverAtBag = {};
+  // rackAtBag[k] = both racks (seat-indexed letter strings, '?' = blank) at
+  // the same moment — lets a calibrator condition the final-margin residual
+  // on the rack information an engine's horizon evaluation actually has.
+  const rackAtBag = {};
+  const rackStr = r => r.map(t => (t.isBlank ? '?' : t.letter.toUpperCase())).join('');
 
   for (;;) {
-    if (bag.length <= 8 && marginAtBag[bag.length] === undefined) marginAtBag[bag.length] = scores[0] - scores[1];
+    if (marginAtBag[bag.length] === undefined) {
+      marginAtBag[bag.length] = scores[0] - scores[1];
+      moverAtBag[bag.length] = seat;
+      rackAtBag[bag.length] = [rackStr(racks[0]), rackStr(racks[1])];
+    }
     if (marginLowbag === null && bag.length < 8) marginLowbag = scores[0] - scores[1];
     if (marginBag1 === null && bag.length === 1) marginBag1 = scores[0] - scores[1];
     if (marginEndgame === null && bag.length === 0) marginEndgame = scores[0] - scores[1];
@@ -340,7 +362,7 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
     scores[1] -= rackValue(racks[1]);
   }
 
-  return { scores, moves, reason, marginLowbag, marginBag1, marginEndgame, marginAtBag };
+  return { scores, moves, reason, marginLowbag, marginBag1, marginEndgame, marginAtBag, moverAtBag, rackAtBag };
 }
 
 // Play one game (spec = {a, b, swap, bag}) in this process and return a
@@ -367,6 +389,14 @@ async function playSpec(spec, verbose, label) {
     aStats: A.stats,
     bStats: B.stats,
     marginLowbag: mLow,
+    // Standing at each late bag size, in A-minus-B terms (pre-treatment
+    // covariates for close-game filtering: play before the late stages is
+    // identical across stage-config A/Bs, so filtering on these is unbiased).
+    marginAtBag: Object.fromEntries(Object.entries(g.marginAtBag).map(([k, v]) => [k, spec.swap ? -v : v])),
+    // moverAtBag[k] = 1 if engine A was about to move when the bag first
+    // held k tiles (mover-perspective calibration needs to know whose turn).
+    moverAtBag: Object.fromEntries(Object.entries(g.moverAtBag).map(([k, s]) => [k, (spec.swap ? 1 - s : s) === 0 ? 1 : 0])),
+    rackAtBag: g.rackAtBag, // seat-indexed (not swap-normalized); pair with moverAtBag
   };
 }
 
@@ -425,8 +455,8 @@ async function main() {
   for (let p = 0; p < opts.pairs; p++) {
     const seed = opts.seed + p;
     const bag = buildSeededBag(mulberry32(seed));
-    specs.push({ a: aFile, b: bFile, swap: false, bag, seed, staticOnly: opts.static });
-    specs.push({ a: aFile, b: bFile, swap: true, bag, seed, staticOnly: opts.static });
+    specs.push({ a: aFile, b: bFile, swap: false, bag, seed, staticOnly: opts.static, aEval: opts.aEval, bEval: opts.bEval });
+    specs.push({ a: aFile, b: bFile, swap: true, bag, seed, staticOnly: opts.static, aEval: opts.aEval, bEval: opts.bEval });
   }
 
   const t0 = Date.now();
@@ -436,11 +466,31 @@ async function main() {
   // summary counts completions, not pair indices.
   let done = 0, liveA = 0, liveB = 0, liveTies = 0, liveMargin = 0;
   let tickPeriod = 20, tickAt = 20;
+  // Close-game sub-tally: games whose standing was within --close points
+  // when the bag first held <= closeBag tiles. Bag sizes can be skipped as
+  // draws shrink the bag, so "first at <= K" is the largest recorded size
+  // <= K. Games that end before the bag gets that low are excluded.
+  const closeBag = opts.closeBag ?? 2;
+  const closeMargin = mab => {
+    if (!mab) return undefined;
+    for (let k = closeBag; k >= 0; k--) if (mab[k] !== undefined) return mab[k];
+    return undefined;
+  };
+  let closeN = 0, closeA = 0, closeB = 0, closeSum = 0;
   const onResult = r => {
     done++; liveMargin += r.aScore - r.bScore;
     if (r.aScore > r.bScore) liveA++; else if (r.bScore > r.aScore) liveB++; else liveTies++;
+    if (opts.close !== undefined) {
+      const m = closeMargin(r.marginAtBag);
+      if (m !== undefined && Math.abs(m) <= opts.close) {
+        closeN++; closeSum += r.aScore - r.bScore;
+        if (r.aScore > r.bScore) closeA++; else if (r.bScore > r.aScore) closeB++;
+      }
+    }
     if (done >= tickAt) {
-      console.log(`  [${done}/${specs.length} games] A ${liveA} — B ${liveB}${liveTies ? ` — ${liveTies} ties` : ''} | avg margin ${(liveMargin / done).toFixed(1)} | ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+      const close = opts.close !== undefined ? ` | close A ${closeA} — B ${closeB} (${closeN})` : '';
+      const am = liveMargin / done;
+      console.log(`  [${done}/${specs.length} games] A ${liveA} — B ${liveB}${liveTies ? ` — ${liveTies} ties` : ''} | A margin ${am >= 0 ? '+' : ''}${am.toFixed(1)}${close} | ${((Date.now() - t0) / 1000).toFixed(0)}s`);
       tickPeriod *= 1.5; tickAt = done + tickPeriod;
     }
   };
@@ -480,11 +530,16 @@ async function main() {
   console.log(`  A: ${totals.A.wins} wins, avg ${(totals.A.points / games).toFixed(1)} pts, ${perMove(totals.A)} ms/move (${totals.A.moves} moves)`);
   console.log(`  B: ${totals.B.wins} wins, avg ${(totals.B.points / games).toFixed(1)} pts, ${perMove(totals.B)} ms/move (${totals.B.moves} moves)`);
   console.log(`  Ties: ${totals.ties}`);
-  console.log(`  Avg margin (A − B): ${((totals.A.points - totals.B.points) / games).toFixed(1)} pts`);
+  console.log(`  A margin (avg A − B per game): ${((totals.A.points - totals.B.points) / games).toFixed(1)} pts`);
   console.log(`  Avg moves per game: ${(totals.gameMoves / games).toFixed(1)}`);
+  if (opts.close !== undefined) {
+    const ties = closeN - closeA - closeB;
+    console.log(`  Close games (|margin at bag<=${closeBag} entry| <= ${opts.close}): ${closeN} of ${games}`);
+    console.log(`    A ${closeA} — B ${closeB}${ties ? ` — ${ties} ties` : ''}, A margin ${(closeN ? closeSum / closeN : 0).toFixed(1)} pts`);
+  }
 }
 
-module.exports = { TILE_DATA, LETTER_VALUES, mulberry32, buildSeededBag, loadWords, loadEngine, playGame };
+module.exports = { TILE_DATA, LETTER_VALUES, mulberry32, buildSeededBag, loadWords, loadEngine, playGame, runPool };
 
 if (require.main === module) {
   main().catch(e => { console.error(e); process.exit(1); });
