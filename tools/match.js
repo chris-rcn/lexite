@@ -256,7 +256,9 @@ async function playGame(engines, initialBag, verbose, label, onPosition, onTurn)
   const bag = initialBag.slice();
   const board = Array.from({ length: 15 }, () => new Array(15).fill(null));
   const racks = [[], []];
-  const scores = [0, 0];
+  // Half-point komi to seat 1 (the second player): a tied raw score
+  // resolves to the second player as pure margin arithmetic, everywhere.
+  const scores = [0, 0.5];
   const draw = seat => {
     while (racks[seat].length < 7 && bag.length > 0) {
       const raw = bag.pop();
@@ -382,6 +384,7 @@ async function playSpec(spec, verbose, label) {
   // filtering regardless of which seat A took this game).
   const mLow = g.marginLowbag == null ? null : (spec.swap ? -g.marginLowbag : g.marginLowbag);
   return {
+    swap: spec.swap, // seat order: A moved second (and carried the komi) when swapped
     aScore: spec.swap ? g.scores[1] : g.scores[0],
     bScore: spec.swap ? g.scores[0] : g.scores[1],
     reason: g.reason,
@@ -460,10 +463,13 @@ async function main() {
   }
 
   const t0 = Date.now();
-  // Live cumulative summary on an exponential schedule (first after 20
-  // games, period ×1.5): long matches show trend and pace mid-run without
-  // a line per game. Games finish out of order under --jobs, so the
-  // summary counts completions, not pair indices.
+  // Live cumulative summary table on an exponential schedule (first after
+  // 20 games, period ×1.5): long matches show trend and pace mid-run
+  // without a line per game. Games finish out of order under --jobs, so
+  // the summary counts completions, not pair indices.
+  console.log(`${'games'.padStart(8)} ${'A'.padStart(6)} ${'B'.padStart(6)} ${'A%'.padStart(6)} ${'A margin'.padStart(9)}` +
+    (opts.close !== undefined ? ` ${'clA'.padStart(6)} ${'clB'.padStart(6)} ${'clN'.padStart(6)}` : '') +
+    ` ${'elapsed'.padStart(9)}`);
   let done = 0, liveA = 0, liveB = 0, liveTies = 0, liveMargin = 0;
   let tickPeriod = 20, tickAt = 20;
   // Close-game sub-tally: games whose standing was within --close points
@@ -479,18 +485,25 @@ async function main() {
   let closeN = 0, closeA = 0, closeB = 0, closeSum = 0;
   const onResult = r => {
     done++; liveMargin += r.aScore - r.bScore;
-    if (r.aScore > r.bScore) liveA++; else if (r.bScore > r.aScore) liveB++; else liveTies++;
+    // The komi makes score equality impossible; a half-point gap marks a
+    // raw tie that the komi resolved to the second player.
+    if (r.aScore > r.bScore) liveA++; else liveB++;
+    if (Math.abs(r.aScore - r.bScore) === 0.5) liveTies++;
     if (opts.close !== undefined) {
       const m = closeMargin(r.marginAtBag);
       if (m !== undefined && Math.abs(m) <= opts.close) {
         closeN++; closeSum += r.aScore - r.bScore;
-        if (r.aScore > r.bScore) closeA++; else if (r.bScore > r.aScore) closeB++;
+        if (r.aScore > r.bScore) closeA++; else closeB++;
       }
     }
     if (done >= tickAt) {
-      const close = opts.close !== undefined ? ` | close A ${closeA} — B ${closeB} (${closeN})` : '';
       const am = liveMargin / done;
-      console.log(`  [${done}/${specs.length} games] A ${liveA} — B ${liveB}${liveTies ? ` — ${liveTies} ties` : ''} | A margin ${am >= 0 ? '+' : ''}${am.toFixed(1)}${close} | ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+      const ratio = liveA + liveB ? (100 * liveA / (liveA + liveB)).toFixed(1) : '—';
+      let row = `${String(done).padStart(8)} ${String(liveA).padStart(6)} ${String(liveB).padStart(6)}` +
+        ` ${ratio.padStart(6)} ${((am >= 0 ? '+' : '') + am.toFixed(1)).padStart(9)}`;
+      if (opts.close !== undefined) row += ` ${String(closeA).padStart(6)} ${String(closeB).padStart(6)} ${String(closeN).padStart(6)}`;
+      row += ` ${(((Date.now() - t0) / 1000).toFixed(0) + 's').padStart(9)}`;
+      console.log(row);
       tickPeriod *= 1.5; tickAt = done + tickPeriod;
     }
   };
@@ -518,9 +531,8 @@ async function main() {
     totals.A.ms += r.aStats.ms; totals.A.moves += r.aStats.moves;
     totals.B.ms += r.bStats.ms; totals.B.moves += r.bStats.moves;
     totals.gameMoves += r.moves;
-    if (r.aScore > r.bScore) totals.A.wins++;
-    else if (r.bScore > r.aScore) totals.B.wins++;
-    else totals.ties++;
+    if (r.aScore > r.bScore) totals.A.wins++; else totals.B.wins++;
+    if (Math.abs(r.aScore - r.bScore) === 0.5) totals.ties++; // raw tie, komi-decided
   }
 
   const games = specs.length;
@@ -529,7 +541,8 @@ async function main() {
   console.log(`\nResult over ${games} games (${secs}s wall):`);
   console.log(`  A: ${totals.A.wins} wins, avg ${(totals.A.points / games).toFixed(1)} pts, ${perMove(totals.A)} ms/move (${totals.A.moves} moves)`);
   console.log(`  B: ${totals.B.wins} wins, avg ${(totals.B.points / games).toFixed(1)} pts, ${perMove(totals.B)} ms/move (${totals.B.moves} moves)`);
-  console.log(`  Ties: ${totals.ties}`);
+  console.log(`  Raw ties (komi-decided for the second player): ${totals.ties}`);
+  console.log(`  A win ratio: ${games ? (100 * totals.A.wins / games).toFixed(1) : '—'}%`);
   console.log(`  A margin (avg A − B per game): ${((totals.A.points - totals.B.points) / games).toFixed(1)} pts`);
   console.log(`  Avg moves per game: ${(totals.gameMoves / games).toFixed(1)}`);
   if (opts.close !== undefined) {

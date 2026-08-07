@@ -402,23 +402,29 @@ async function onlineLearn(opts) {
   if (opts.dither) engine.evalInRealm(`installEvalDither(${opts.dither}, ${opts.seed});`);
   const lr = opts.lr, betaB = opts.betaB;
   // Slow EMAs, all checkpointed so they survive recycles instead of
-  // resetting. b (betaB, ~500-transition window) tracks the policy's mean
-  // move score, which drifts only as the policy improves — a fast window
-  // would just inject sampling noise into every TD target via (points - b).
-  // The error EMAs (~3k window) smooth the noisy TD residuals while staying
-  // responsive.
+  // resetting. b (betaB, ~5,000-transition window) tracks the policy's mean
+  // move score, which drifts extremely slowly (~3 pts per million
+  // transitions measured) — so the window is sized for noise suppression,
+  // not responsiveness; a fast window just injects sampling noise into
+  // every TD target via (points - b). The error EMAs (~3k window) smooth
+  // the noisy TD residuals while staying responsive.
   // The logged signal is eAbs/eRef — TD error relative to the zero-model
   // residual |points - b|. It starts at 1.0 (zero weights explain nothing)
   // and falls toward the irreducible-noise floor as the leave model learns;
   // it is lr- and order-independent, so runs are directly comparable.
   const betaErr = 0.0003;
-  let b = 0, nTrans = 0, nGames = 0;                 // b = running average move points (baseline)
+  // b = running average move points (baseline), initialized at the measured
+  // greedy self-play baseline (~35) so the slow EMA needs no warm-up ramp;
+  // a checkpoint's saved b overrides on resume.
+  let b = 35, nTrans = 0, nGames = 0;
   let eAbs = 0, eRef = 0;                            // EMA of |TD err| and of |points - b|
+  let nProbes = 0;                                   // probe updates (persisted so the ratio survives resumes)
   // resume from a checkpoint if one exists (survives container restarts)
   const resuming = opts.ckpt && fs.existsSync(opts.ckpt);
   if (resuming) {
     const st = JSON.parse(fs.readFileSync(opts.ckpt, 'utf8'));
     sb.__importW(st.w); b = st.b; nGames = st.games; nTrans = st.trans;
+    nProbes = st.probes || 0;                        // older ckpts lack it: count restarts from 0
     if (st.eRef !== undefined) { eAbs = st.eAbs; eRef = st.eRef; }  // older ckpts lack these; restart the pair together
     console.log(`resumed from ${opts.ckpt}: games ${nGames}, trans ${nTrans}, b=${b.toFixed(1)}`);
     if (process.argv.includes('--init-blank')) console.log('--init-blank ignored: weights come from the checkpoint');
@@ -440,7 +446,7 @@ async function onlineLearn(opts) {
   let logPeriod = 10, nextLogAt = nGames + logPeriod;
   const saveCkpt = () => {                            // atomic write (tmp + rename)
     if (!opts.ckpt) return;
-    fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, b, eAbs, eRef, w: sb.__exportW() }));
+    fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, probes: nProbes, b, eAbs, eRef, w: sb.__exportW() }));
     fs.renameSync(opts.ckpt + '.tmp', opts.ckpt);
   };
   const prev = ['', ''];
@@ -464,9 +470,7 @@ async function onlineLearn(opts) {
       const err = sb.__tdUpdate(prev[seat], points, r, b, lr, Math.min(1, bagN / 7));
       eAbs += betaErr * (Math.abs(err) - eAbs);
       eRef += betaErr * (Math.abs(points - b) - eRef);
-      // exact running mean until the EMA window fills, then EMA — so a fresh
-      // start snaps to the true mean instead of ramping up slowly from 0
-      b += Math.max(betaB, 1 / (nTrans + 1)) * (points - b);
+      b += betaB * (points - b);
       nTrans++;
     }
     prev[seat] = r;
@@ -499,7 +503,6 @@ async function onlineLearn(opts) {
   const PROBE_CHAIN = 3;
   const chainsPerTurn = probesPerTurn / PROBE_CHAIN;  // keeps probe UPDATES at ratio R
   const probeRng = mulberry32((opts.seed ^ 0x9e3779b9) >>> 0);
-  let nProbes = 0;
   const runProbe = async (board, bag, isFirstMove, rack) => {
     const pool = [...bag, ...rack.map(t => (t.isBlank ? '?' : t.letter))];
     const draw = n => { const out = []; while (out.length < n && pool.length) out.push(pool.splice(Math.floor(probeRng() * pool.length), 1)[0]); return out; };
@@ -600,7 +603,7 @@ function main() {
 
     lr: parseFloat(arg('--lr', '0.001')),
     maxorder: parseInt(arg('--maxorder', '5'), 10),
-    betaB: parseFloat(arg('--betaB', '0.002')),
+    betaB: parseFloat(arg('--betaB', '0.0002')),
     dither: parseFloat(arg('--dither', '0')),
     initBlank: parseFloat(arg('--init-blank', '20')),
     probeRatio: parseFloat(arg('--probe-ratio', '0')),

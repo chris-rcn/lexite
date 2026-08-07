@@ -248,7 +248,12 @@ function newGame() {
   state.playerRack = [];
   state.computerRack = [];
   state.playerScore = 0;
-  state.computerScore = 0;
+  // Half-point komi to the second player (the computer — the human always
+  // opens): a raw tie resolves to the second player as pure margin
+  // arithmetic, and every margin-consuming evaluation (including the
+  // score-aware P(win) paths) inherits the rule with no seat-parity
+  // plumbing. Internal only; displays floor to whole points.
+  state.computerScore = 0.5;
   state.turn = 'player';
   state.isFirstMove = true;
   state.pending = [];
@@ -622,8 +627,10 @@ function reorderRack(fromIdx, toIdx) {
 // ============================================================
 
 function renderScores() {
-  document.getElementById('player-score').textContent = state.playerScore;
-  document.getElementById('computer-score').textContent = state.computerScore;
+  // Scores are floats internally (the second player carries a half-point
+  // komi implementing ties-to-second-player); the UI shows whole points.
+  document.getElementById('player-score').textContent = Math.floor(state.playerScore);
+  document.getElementById('computer-score').textContent = Math.floor(state.computerScore);
 }
 
 function updateBagCount() {
@@ -2310,6 +2317,11 @@ function normalCdf(z) { return 0.5 * (1 + erfApprox(z / Math.SQRT2)); }
 // linear in the unseen-tile count: sigma^2(bag) = 89.5*bag + 991. So
 // with `margin` the mover-perspective standing at a point where it is
 // the mover's turn: P(win) = Phi((margin + MU) / sigma(bag)).
+// Tie rule: a tied raw score is a win for the SECOND player, implemented
+// as a half-point komi in the second player's starting score. Margins are
+// therefore never exactly zero, and every score-aware quantity — the
+// standing myScoreMargin, playout finals, the P(win) threshold — inherits
+// the rule exactly, with no seat-parity plumbing or continuity correction.
 const WINPROB_MU = 19;
 // Raw spread: all residual variance from a bag-k standing (opponent rack
 // unknown). Used as the smoothing kernel for terminal-playout win credit,
@@ -2659,26 +2671,59 @@ async function findBestSimMove(rack, cfg) {
         const oppDrawStart = cursor;
         const oppDraw = Math.min(7 - oppKept.length, state.bag.length);
 
-        let horizon = 0;
-        const scaleH = Math.min(1, (state.bag.length - oppDraw) / 7);
-        if (scaleH > 0 && leaveModelReady()) {
-          // Fill the leaf eval rack to 6 tiles while the bag is comfortable
-          // (>10) so it stays inside the superleave table's <=6 domain;
-          // fill completely (7) near the bag end, where the realized rack
-          // matters (7-tile vectors use the table's drop-one mean).
-          const target = realBag.length > 10 ? 6 : 7;
-          const specMy = Math.min(myDraw, Math.max(0, target - myKept.length));
-          const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));
-          const myEval = myKept.concat(world.slice(myDrawStart, myDrawStart + specMy));
-          const oppEval = oppKept.concat(world.slice(oppDrawStart, oppDrawStart + specOpp));
-          horizon = scaleH *
-            (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
+        // Fill the leaf eval rack to 6 tiles while the bag is comfortable
+        // (>10) so it stays inside the superleave table's <=6 domain; fill
+        // completely (7) near the bag end, where the realized rack matters
+        // (7-tile vectors use the table's drop-one mean).
+        const target = realBag.length > 10 ? 6 : 7;
+        let dMargin, bagH;
+        if ((cfg.plies || 2) >= 3 && reply && reply.placements) {
+          // 3-ply: apply the reply, refill my rack from the world's draw
+          // order, play my best static answer on the twice-updated board,
+          // and take the horizon one round later. My two moves against the
+          // opponent's one adds a tempo offset, but it is common to every
+          // arm, so rankings are unaffected — what changes is that a
+          // candidate's leave quality is realized by an actual second move
+          // instead of the leave heuristic alone.
+          applyToBoard(reply.placements);
+          const rack2 = myKept.concat(world.slice(myDrawStart, myDrawStart + myDraw));
+          const bagAfterOpp = world.slice(oppDrawStart + oppDraw);
+          state.bag = bagAfterOpp;
+          const my2 = await findBestMove(rack2); // static: inSimulation is set
+          const my2Score = my2 && my2.placements ? my2.score : 0;
+          const my2Kept = my2 ? rackWithout(rack2, my2.placements || my2.tiles || []) : rack2;
+          const my2DrawStart = oppDrawStart + oppDraw;
+          const my2Draw = Math.min(7 - my2Kept.length, bagAfterOpp.length);
+          let horizon3 = 0;
+          const scale3 = Math.min(1, (bagAfterOpp.length - my2Draw) / 7);
+          if (scale3 > 0 && leaveModelReady()) {
+            const specMy = Math.min(my2Draw, Math.max(0, target - my2Kept.length));
+            const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));
+            const myEval = my2Kept.concat(world.slice(my2DrawStart, my2DrawStart + specMy));
+            const oppEval = oppKept.concat(world.slice(oppDrawStart, oppDrawStart + specOpp));
+            horizon3 = scale3 *
+              (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
+          }
+          removeFromBoard(reply.placements);
+          dMargin = arm.score - rScore + my2Score + horizon3;
+          bagH = Math.max(0, bagAfterOpp.length - my2Draw);
+        } else {
+          let horizon = 0;
+          const scaleH = Math.min(1, (state.bag.length - oppDraw) / 7);
+          if (scaleH > 0 && leaveModelReady()) {
+            const specMy = Math.min(myDraw, Math.max(0, target - myKept.length));
+            const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));
+            const myEval = myKept.concat(world.slice(myDrawStart, myDrawStart + specMy));
+            const oppEval = oppKept.concat(world.slice(oppDrawStart, oppDrawStart + specOpp));
+            horizon = scaleH *
+              (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
+          }
+          dMargin = arm.score - rScore + horizon;
+          bagH = Math.max(0, state.bag.length - oppDraw);
         }
-        const dMargin = arm.score - rScore + horizon;
         if (scoreAware) {
-          // Horizon state: my move and the opponent's reply are played,
-          // it is my turn again — the calibration's reference frame.
-          const bagH = Math.max(0, state.bag.length - oppDraw);
+          // bagH is the horizon bag size with my turn to move — the
+          // calibration's reference frame at either ply depth.
           vals[ci].push(winProbAtBag(myScoreMargin + dMargin, bagH));
         } else {
           vals[ci].push(dMargin);
@@ -3101,10 +3146,13 @@ function endGame(reason) {
 
   const pScore = state.playerScore;
   const cScore = state.computerScore;
+  // The komi makes equality impossible; when the whole-point scores are
+  // equal the half point decided it, so say so.
   let winner;
   if (pScore > cScore) winner = 'You win!';
-  else if (cScore > pScore) winner = 'Computer wins.';
-  else winner = "It's a tie.";
+  else winner = Math.floor(pScore) === Math.floor(cScore)
+    ? 'Computer wins (a tie goes to the second player).'
+    : 'Computer wins.';
 
   logEntry(`${reason} ${winner}`, 'system');
 
@@ -3113,7 +3161,7 @@ function endGame(reason) {
   const reasonLine = document.createElement('div');
   reasonLine.textContent = reason;
   const scoreLine = document.createElement('div');
-  scoreLine.textContent = `You ${pScore} — Computer ${cScore}`;
+  scoreLine.textContent = `You ${Math.floor(pScore)} — Computer ${Math.floor(cScore)}`;
   scoresEl.appendChild(reasonLine);
   scoresEl.appendChild(scoreLine);
   document.getElementById('end-winner').textContent = winner;

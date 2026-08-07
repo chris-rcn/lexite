@@ -49,6 +49,12 @@ A single-player word tile game played against the computer on a 15×15 board.
 | Double Letter | Light blue | Letter value × 2 |
 | Bingo | — | +50 points for using all 7 tiles in one move |
 
+A tied final score is a win for the second player (the computer — the
+human always opens), compensating the first-move advantage. Internally
+this is a half-point komi in the second player's starting score, so all
+margin arithmetic — including the engine's win-probability machinery —
+inherits the rule exactly; displayed scores stay whole.
+
 ## Word List
 
 The game uses an open-source, public-domain word list, plus a small house
