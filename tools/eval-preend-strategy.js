@@ -40,7 +40,7 @@ const E = m.loadEngine(ENGINE, words, {});
 const STG = E.evalInRealm(`ensureTrie(); ensureLeaveTables(); stageFor(${BAG})`);
 // Clean baseline so a stage's production defaults (e.g. preendgame's enumerate)
 // don't leak into the sampling specs.
-let setup = `STAGES.${STG}.enumerate = false; STAGES.${STG}.bayes = 0; STAGES.${STG}.confidence = 0;
+let setup = `STAGES.${STG}.enumerate = false; STAGES.${STG}.bayes = 0;
   globalThis.__moveKey = (pl) => pl.map(p => p.row + ',' + p.col + ',' + (p.isBlank ? '?' : p.letter.toUpperCase())).sort().join('|');`;
 if (SPEC === 'static') setup += `STAGES.${STG}.static = true;`;
 else if (SPEC.startsWith('enum:')) { const [, C] = SPEC.split(':');

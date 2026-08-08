@@ -36,7 +36,7 @@ const E = m.loadEngine(ENGINE, words, {});
 // stage. Start from a clean baseline (enumeration and Bayes off) so the stage's
 // production defaults don't leak into the sampling specs.
 let setup = `ensureTrie(); ensureLeaveTables();
-  STAGES.bag1.enumerate = false; STAGES.bag1.bayes = 0; STAGES.bag1.confidence = 0;
+  STAGES.bag1.enumerate = false; STAGES.bag1.bayes = 0;
   globalThis.__moveKey = (pl) => pl.map(p => p.row + ',' + p.col + ',' + (p.isBlank ? '?' : p.letter.toUpperCase())).sort().join('|');`;
 if (SPEC === 'static') setup += `STAGES.bag1.static = true;`;
 else if (SPEC.startsWith('enum:')) { const [, C] = SPEC.split(':');

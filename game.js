@@ -1841,15 +1841,15 @@ const SIM_BASE = {
   // a simulation could genuinely overrule the static best into sat 10 back.
   margin: 10,
   samples: 30,      // sampled worlds, shared across candidates
-  confidence: 1.5,  // paired z threshold to overrule the static choice
   minWorlds: 6,     // worlds evaluated before pruning may trigger
   pruneEvery: 2,    // prune check cadence (in worlds) after the minimum
-  // Bayesian overrule (alternative to the confidence gate). Models the true
-  // value gap of a challenger vs the incumbent as mu ~ Normal(dStatic, tau^2)
-  // — the static move+leave gap is the prior mean, priorSd is the prior SD (in
-  // points) — updates with the sampled paired differences, and overrules iff
-  // the posterior P(mu > 0) exceeds overruleP. Off by default.
-  bayes: 0,         // 1 enables the Bayesian decision in place of the gate
+  // Bayesian overrule. Models the true value gap of a challenger vs the
+  // incumbent as mu ~ Normal(dStatic, tau^2) — the static move+leave gap is
+  // the prior mean, priorSd is the prior SD (in points) — updates with the
+  // sampled paired differences, and overrules iff the posterior P(mu > 0)
+  // exceeds overruleP. Enabled by the midgame stage; terminal stages keep
+  // the paired-mean argmax rule (bayes 0).
+  bayes: 0,         // 1 enables the Bayesian decision in place of argmax
   priorSd: 12,      // tau: prior SD (points) of the true gap around dStatic
   overruleP: 0.9,   // posterior P(challenger better) needed to overrule
   varFloor: 1,      // floor on the per-world variance estimate (points^2)
@@ -1871,32 +1871,32 @@ const STAGES = {
   // (opponent rack | bag) worlds, so enumerate them all exactly (enumerate:true)
   // rather than sample — each candidate's mean over the 8 equally-likely worlds
   // is its exact expected value under the rollout, with no sampling variance and
-  // no confidence gate needed (confidence 0 = pick the argmax). Over 518 exact
+  // no gate needed (paired-mean argmax). Over 518 exact
   // bag=1 solves: mean regret vs the endgame solver 1.82 pts (static 4.65), 64%
   // optimal (static 48%), p99 ~1.1s — the quality ceiling reachable under ~1s
   // with a greedy rollout (the last ~1.8 pts needs the exact solver at
   // 15-43s/move).
-  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 8, margin: 0, confidence: 0, scoreAware: 0 },
+  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 8, margin: 0, scoreAware: 0 },
   // bag2: still near-perfect info, but the unseen pool now splits into C(9,2)=36
   // worlds — too many to enumerate all of within ~1s (full enumeration p99 ~3s).
   // Instead sample 10 of the 36 worlds and pick the argmax expected value under
-  // the greedy rollout (confidence 0). A few crowded-board positions have
+  // the greedy rollout (argmax rule). A few crowded-board positions have
   // intrinsically slow rollouts, so the tail is bounded by the world count, not
   // a node cap (truncation doesn't help when per-node cost is high). Over 105
   // exact bag=2 solves: mean regret vs the endgame solver 1.43 pts (static 4.20),
   // 66% optimal (static 54%), p99 ~850ms. More worlds cut regret (24 -> 0.91)
   // but push p99 past 1s; 10 is the most that fits the budget.
-  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 6, margin: 0, confidence: 0, scoreAware: 0 },
+  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 6, margin: 0, scoreAware: 0 },
   // bag3: the unseen pool splits into C(10,3)=120 worlds — far too many to
   // enumerate within ~1s (full enumeration runs p99 ~7s). Sample 10 of them over
-  // 5 candidates and pick the argmax under the greedy rollout (confidence 0).
+  // 5 candidates and pick the argmax under the greedy rollout (argmax rule).
   // This holds the ~10-world budget shared with bag2/bag4 while candidates step
   // down 6->5->4 across bag2->3->4 as the best-move mass concentrates. Scored
   // against an approximate oracle (greedy rollout over all 120 worlds — bag=3 is
   // too deep to solve exactly): over 205 positions mean regret 2.30 pts (static
   // 7.41), 61% optimal (static 40%), p99 ~990ms. (C=6/S=6 was 2.55; C=4 is worse
   // here — unlike bag4 — because bag3's best move often sits at rank 5.)
-  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 5, margin: 0, confidence: 0, scoreAware: 0 },
+  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 5, margin: 0, scoreAware: 0 },
   // bag4: C(11,4)=330 worlds. With the ~1s budget stretched this thin, world
   // coverage — not candidate count — is the bottleneck, so the budget-optimal
   // split is FEWER candidates and MORE worlds: sample 10 worlds over only 4
@@ -1906,7 +1906,7 @@ const STAGES = {
   // but the trustworthy paired gap is +1.89 pts of picked-move value vs static
   // at p99 ~900ms. C=6/S=6 recovers only +1.13 at the same budget; C=4/S=10 is
   // the frontier optimum (C=3 starts missing rank-4 best moves).
-  bag4: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, confidence: 0, scoreAware: 0 },
+  bag4: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, scoreAware: 0 },
   // bag5: C(12,5)=792 worlds. Same starved-budget regime as bag4 — reuse the
   // 10-world / 4-candidate split (regret 4.30 vs a 100-world greedy-sample
   // oracle over 224 positions, paired gap +1.16 pts vs static, p99 ~830ms). The
@@ -1915,7 +1915,7 @@ const STAGES = {
   // naive C=6/S=6 is actually WORSE than static here (winner's curse on 6 noisy
   // worlds), and the gap-vs-static is against a greedy oracle — treat as tuning,
   // not a strength verdict, pending a win-rate A/B.
-  bag5: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, confidence: 0, scoreAware: 0 },
+  bag5: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, scoreAware: 0 },
   // bag6: C(13,6)=1716 worlds. The board is wide open, so the best move is almost
   // always one of the top 2 — the budget-optimal split drops to just 2
   // candidates over 10 worlds. Against a sim:50:8 (50-world) greedy oracle over
@@ -1923,7 +1923,7 @@ const STAGES = {
   // ~650ms (well under budget). C=2 beats C=3/4 here (+1.4-1.6); the naive
   // C=6/S=6 recovers only +0.56. As with bag4/5 this is a greedy-oracle tuning
   // result, not a strength verdict — pending a win-rate A/B.
-  bag6: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 2, margin: 0, confidence: 0, scoreAware: 0 },
+  bag6: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 2, margin: 0, scoreAware: 0 },
   // bag7: C(14,7)=3432 worlds and the longest rollouts of any pre-endgame band
   // (a move that doesn't empty the bag plays out through bag 7->0). Sample 8
   // worlds over 2 candidates. Against a sim:50:6 (50-world) greedy oracle over
@@ -1932,9 +1932,16 @@ const STAGES = {
   // thinnest here (1.5% world coverage) — treat as tuning, not a strength
   // verdict. A 2-ply horizon eval (unlike terminal rollout) does NOT beat static
   // here: it never reaches the endgame where the value lives.
-  bag7: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 8, candidates: 2, margin: 0, confidence: 0, scoreAware: 0 },
+  bag7: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 8, candidates: 2, margin: 0, scoreAware: 0 },
   // bagGt7 (deep bag): value each world by a 2-ply horizon (score + leave diff).
-  bagGt7: { ...SIM_BASE, mode: 'horizon' },
+  // Midgame decision rule, measured on a 1,758-position contested-decision
+  // benchmark against a 100-world margin-12 oracle: Bayesian overrule at
+  // P>0.7 with 40 worlds scores 0.48 regret/decision at 76.7% oracle
+  // agreement vs 0.69 / 72.0% for the previous z=1.5 gate at 30 worlds —
+  // the strict gate blocked more correct overrules than the noise it
+  // filtered. Same p99 (~1.1s). The threshold optimum is interior: P<=0.6
+  // tested worse (sim noise starts overruling the static prior too often).
+  bagGt7: { ...SIM_BASE, mode: 'horizon', samples: 40, bayes: 1, overruleP: 0.7 },
 };
 
 // bag length -> stage key.
@@ -1964,7 +1971,17 @@ const TRACE = {
   lastRank: 0,      // chosen arm index (0 = static best)
   lastZ: 0,         // paired z (mean/se) of chosen vs arm 0: override strength
   lastNArms: 0,     // number of candidate arms considered (margin/count binding)
+  lastArmEvals: null, // per-arm { sig, mean, alive, staticVal } of the last sim
+  lastChosenSig: null,
 };
+
+// Canonical arm signature: placements sorted by square, or the sorted
+// exchange tileset — stable across engines evaluating the same position,
+// so an oracle's arm list can be matched against another config's choice.
+function armSig(a) {
+  if (!a.move) return 'x:' + a.tiles.map(t => (t.isBlank ? '?' : t.letter.toUpperCase())).sort().join('');
+  return a.placements.map(p => p.row + ',' + p.col + ':' + (p.isBlank ? '?' : '') + p.letter.toUpperCase()).sort().join('|');
+}
 
 // Thrown by endgameSearch when the movegen budget is exhausted; caught by
 // findBestEndgameMove, which then plays the greedy move.
@@ -2265,6 +2282,23 @@ async function scanStaticMoves(rack, onMove) {
   }
 }
 
+// Static play, exchange included: the best move by static value, unless
+// exchanging (score 0 plus the leave of the best keep — undamped, since
+// exchanges require bag >= 7) statically outranks it. Ties keep the move,
+// matching the joint ranking's stable order. This is findBestSimMove at
+// candidates=1 with no simulation. Distinct from findBestStaticMove,
+// which is move-only and remains the in-simulation opponent model.
+async function findBestStaticPlay(rack) {
+  let bestVal = -Infinity;
+  let bestMove = null;
+  await scanStaticMoves(rack, (m, val) => {
+    if (val > bestVal) { bestVal = val; bestMove = m; }
+  });
+  const exchange = state.bag.length >= 7 ? bestExchangeKeep(rack) : null;
+  if (exchange && exchange.value > bestVal) return { exchange: true, tiles: exchange.tiles };
+  return bestMove;
+}
+
 // Best move by static evaluation: first strict maximum in scan order.
 async function findBestStaticMove(rack) {
   let bestVal = -Infinity;
@@ -2499,10 +2533,12 @@ function bestExchangeKeep(rack) {
 // candidate with the best mean wins; ties keep static order.
 //
 // With 7+ tiles in the bag, the best exchange (per bestExchangeKeep) is
-// one more arm: it scores zero, touches no board cells, and redraws from
-// the sampled world — the playout prices it in the same margin units as
-// the moves, and the confidence gate means the engine only exchanges
-// when that is confidently better than the best move.
+// a candidate like any move: it scores zero, touches no board cells, and
+// redraws from the sampled world. It is ranked jointly with the move
+// candidates by static value (0 + the damped pool-aware leave of its
+// keep) and competes for a simulation slot under the same top-K and
+// margin rules — no guaranteed seat, so the common case (a good move
+// exists, the exchange is statically hopeless) costs nothing to dismiss.
 async function findBestSimMove(rack, cfg) {
   const cands = await collectTopCandidates(rack, cfg);
   const exchange = state.bag.length >= 7 ? bestExchangeKeep(rack) : null;
@@ -2511,12 +2547,14 @@ async function findBestSimMove(rack, cfg) {
     return exchange ? { exchange: true, tiles: exchange.tiles } : null;
   }
 
-  // Arms: move candidates in static order (arm 0 is the incumbent),
-  // then the exchange as a challenger. staticVal is the move+leave score
-  // that ranked the candidate (arm 0 holds the maximum); the Bayesian
-  // overrule uses it as the prior mean. The exchange scores 0 on the board,
-  // so its static value is just its (pool-aware) leave value, damped by the
-  // same bag taper the move leaves carry.
+  // Arms in static order; arm 0 (the incumbent the gates protect) is
+  // whichever option ranks first, exchange included. staticVal is the
+  // static score+leave that ranked the arm; the Bayesian overrule uses it
+  // as the prior mean. The exchange joins the ranking at its own static
+  // value and must survive the same top-K cut and margin prune as the
+  // moves (the earlier move-only prune in collectTopCandidates stays
+  // valid: anything it dropped is at least as far behind the merged
+  // leader as it was behind the best move).
   const leaveScale0 = Math.min(1, state.bag.length / 7);
   const arms = cands.map(c => ({
     move: c.m, placements: c.m.placements, score: c.m.score,
@@ -2525,6 +2563,12 @@ async function findBestSimMove(rack, cfg) {
   if (exchange) {
     arms.push({ move: null, placements: null, score: 0, kept: exchange.keep,
       tiles: exchange.tiles, staticVal: leaveScale0 * exchange.value });
+    arms.sort((a, b) => b.staticVal - a.staticVal);
+    if (arms.length > cfg.candidates) arms.length = cfg.candidates;
+    if (cfg.margin > 0) {
+      const cut = arms[0].staticVal - cfg.margin;
+      while (arms.length > 1 && arms[arms.length - 1].staticVal < cut) arms.pop();
+    }
   }
   const armResult = a => a.move ? a.move : { exchange: true, tiles: a.tiles };
   if (arms.length === 1) return armResult(arms[0]);
@@ -2615,9 +2659,9 @@ async function findBestSimMove(rack, cfg) {
   // Phi's curvature then prices variance by standing — ahead prefers
   // reply-denying (variance-reducing) moves, behind variance-seeking ones
   // — though only as far as the 2-ply world spread can see. Units become
-  // probabilities, so the z-based confidence gates still apply, but the
-  // Bayesian overrule's point-calibrated prior (priorSd) does not: use
-  // scoreAware with the default confidence gate, not cfg.bayes.
+  // probabilities, so the Bayesian overrule's point-calibrated prior
+  // (priorSd) no longer applies: scoreAware is only meaningful with the
+  // argmax rule (bayes 0), not cfg.bayes.
   const scoreAware = !!cfg.scoreAware;
   const myScoreMargin = state.computerScore - state.playerScore;
   const vals = Array.from({ length: K }, () => []); // vals[arm][world]
@@ -2744,8 +2788,8 @@ async function findBestSimMove(rack, cfg) {
             // overrule threshold — it can no longer clear overruleP.
             if (bayesProb(vals, ci, 0, n) < 1 - cfg.overruleP) alive[ci] = false;
           } else {
-            const [mean, se] = pairedStats(vals, ci, 0, n);
-            if (mean < 0 && (se === 0 || mean < -cfg.confidence * se)) alive[ci] = false;
+            const [mean] = pairedStats(vals, ci, 0, n);
+            if (mean < 0) alive[ci] = false;
           }
         }
       }
@@ -2756,27 +2800,30 @@ async function findBestSimMove(rack, cfg) {
   }
 
   // The static choice (candidate 0) stays unless a surviving challenger
-  // beats it with confidence: the candidates share worlds, so their
-  // per-world differences form a paired sample, and the challenger must
-  // win by more than CONFIDENCE standard errors of that difference.
-  // Without the gate, overrules happen at the sampling-noise floor and
-  // are wrong about half the time.
+  // beats it: the candidates share worlds, so their per-world differences
+  // form a paired sample. Under cfg.bayes the challenger must clear the
+  // posterior threshold — the prior (centered on the static gap) and the
+  // sampled uncertainty are already folded in, so no separate significance
+  // gate is needed. Otherwise (terminal stages, whose few worlds are exact
+  // or near-exact expectations) a positive paired mean suffices: argmax.
   let bestIdx = 0;
   for (let ci = 1; ci < K; ci++) {
     if (!alive[ci]) continue;
     if (cfg.bayes) {
-      // Overrule the incumbent only when the posterior says the challenger
-      // is better with probability > overruleP. The prior (centered on the
-      // static gap) and the sampled uncertainty are already folded in, so no
-      // separate significance gate is needed.
       if (bayesProb(vals, ci, bestIdx, M) > cfg.overruleP) bestIdx = ci;
     } else {
-      const [mean, se] = pairedStats(vals, ci, bestIdx, M);
-      if (mean <= 0) continue;
-      if (se === 0 || mean > cfg.confidence * se) bestIdx = ci;
+      const [mean] = pairedStats(vals, ci, bestIdx, M);
+      if (mean > 0) bestIdx = ci;
     }
   }
   if (TRACE.on) {
+    TRACE.lastArmEvals = arms.map((a, ci) => ({
+      sig: armSig(a),
+      mean: vals[ci].length ? vals[ci].reduce((s, v) => s + v, 0) / vals[ci].length : null,
+      alive: alive[ci],
+      staticVal: a.staticVal,
+    }));
+    TRACE.lastChosenSig = armSig(arms[bestIdx]);
     const override = bestIdx !== 0;
     TRACE.lastOverride = override;
     TRACE.lastRank = bestIdx;
@@ -2901,7 +2948,7 @@ async function findBestMove(rack) {
   // regardless of the stage config.
   if (inSimulation) return findBestStaticMove(rack);
   const cfg = STAGES[stageFor(state.bag.length)];
-  if (cfg.static) return findBestStaticMove(rack);
+  if (cfg.static) return findBestStaticPlay(rack);
   if (state.bag.length === 0) return findBestEndgameMove(rack);
   if (cfg.mode === 'solver') return findBestPreEndgameMove(rack, cfg);
   return findBestSimMove(rack, cfg);
