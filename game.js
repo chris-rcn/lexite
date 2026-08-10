@@ -2411,12 +2411,25 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize) {
     }
     state.bag = bagArr; // consumers only read its length
     const mover = side === 1 ? oppRack : myRack;
-    const mv = await findBestStaticMove(mover);
+    const mv = await findBestSimReply(mover);
     if (!mv) {
+      // True pass: no move and no exchange possible. Board and rack are
+      // unchanged, so two in a row is a genuine deadlock (the real game's
+      // 6-pass rule exists for players; nothing here can change state).
       if (++passes >= 2) {
         margin += rackValueOf(oppRack) - rackValueOf(myRack);
         break;
       }
+    } else if (mv.exchange) {
+      // Stuck rack exchanges: refill from the world's fixed draw order,
+      // discards rejoin at the end (they cannot be redrawn immediately).
+      // Progress is made — racks change — so the deadlock counter resets;
+      // the ply guard bounds pathological exchange chains.
+      passes = 0;
+      const kept = rackWithout(mover, mv.tiles);
+      while (kept.length < 7 && bagArr.length > 0) kept.push(bagArr.shift());
+      for (const t of mv.tiles) bagArr.push(t);
+      if (side === 1) oppRack = kept; else myRack = kept;
     } else {
       passes = 0;
       applyToBoard(mv.placements);
@@ -2439,6 +2452,22 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize) {
 }
 
 let inSimulation = false; // opponent replies inside a sim use static play
+
+// In-simulation reply policy: fast static play, plus the correction any
+// competent player makes — with no legal move and a bag that allows it,
+// exchange the worst tiles (bestExchangeKeep) rather than pass. A pass
+// with seven tiles and a live bag is not a behavior real opponents
+// exhibit, and modeling it distorts exactly the worlds where a candidate
+// blocks the opponent out of a move. Voluntary exchanges (a legal move
+// exists but the keep is statically better) stay out of the reply policy:
+// that is a modeling-fidelity experiment with a per-reply-per-world cost,
+// not a correctness fix.
+async function findBestSimReply(rack) {
+  const mv = await findBestStaticMove(rack);
+  if (mv) return mv;
+  const exchange = state.bag.length >= 7 ? bestExchangeKeep(rack) : null;
+  return exchange ? { exchange: true, tiles: exchange.tiles } : null;
+}
 
 function seededRng(seed) {
   let a = seed >>> 0;
@@ -2707,11 +2736,13 @@ async function findBestSimMove(rack, cfg) {
         // bag's length matters (leave damping / endgame switch). For an
         // exchange arm the discards rejoin the real bag, so its length
         // is unchanged; the sampled draw order simply skips them (they
-        // cannot be redrawn immediately anyway).
+        // cannot be redrawn immediately anyway). A stuck reply rack
+        // exchanges rather than passes (findBestSimReply): score 0, no
+        // board change, kept = rack minus discards — same accounting.
         state.bag = world.slice(cursor);
         const reply = await findBestMove(oppRack);
-        const rScore = reply ? reply.score : 0;
-        const oppKept = reply ? rackWithout(oppRack, reply.placements) : oppRack;
+        const rScore = reply && reply.placements ? reply.score : 0;
+        const oppKept = reply ? rackWithout(oppRack, reply.placements || reply.tiles) : oppRack;
         const oppDrawStart = cursor;
         const oppDraw = Math.min(7 - oppKept.length, state.bag.length);
 
@@ -2720,54 +2751,21 @@ async function findBestSimMove(rack, cfg) {
         // completely (7) near the bag end, where the realized rack matters
         // (7-tile vectors use the table's drop-one mean).
         const target = realBag.length > 10 ? 6 : 7;
-        let dMargin, bagH;
-        if ((cfg.plies || 2) >= 3 && reply && reply.placements) {
-          // 3-ply: apply the reply, refill my rack from the world's draw
-          // order, play my best static answer on the twice-updated board,
-          // and take the horizon one round later. My two moves against the
-          // opponent's one adds a tempo offset, but it is common to every
-          // arm, so rankings are unaffected — what changes is that a
-          // candidate's leave quality is realized by an actual second move
-          // instead of the leave heuristic alone.
-          applyToBoard(reply.placements);
-          const rack2 = myKept.concat(world.slice(myDrawStart, myDrawStart + myDraw));
-          const bagAfterOpp = world.slice(oppDrawStart + oppDraw);
-          state.bag = bagAfterOpp;
-          const my2 = await findBestMove(rack2); // static: inSimulation is set
-          const my2Score = my2 && my2.placements ? my2.score : 0;
-          const my2Kept = my2 ? rackWithout(rack2, my2.placements || my2.tiles || []) : rack2;
-          const my2DrawStart = oppDrawStart + oppDraw;
-          const my2Draw = Math.min(7 - my2Kept.length, bagAfterOpp.length);
-          let horizon3 = 0;
-          const scale3 = Math.min(1, (bagAfterOpp.length - my2Draw) / 7);
-          if (scale3 > 0 && leaveModelReady()) {
-            const specMy = Math.min(my2Draw, Math.max(0, target - my2Kept.length));
-            const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));
-            const myEval = my2Kept.concat(world.slice(my2DrawStart, my2DrawStart + specMy));
-            const oppEval = oppKept.concat(world.slice(oppDrawStart, oppDrawStart + specOpp));
-            horizon3 = scale3 *
-              (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
-          }
-          removeFromBoard(reply.placements);
-          dMargin = arm.score - rScore + my2Score + horizon3;
-          bagH = Math.max(0, bagAfterOpp.length - my2Draw);
-        } else {
-          let horizon = 0;
-          const scaleH = Math.min(1, (state.bag.length - oppDraw) / 7);
-          if (scaleH > 0 && leaveModelReady()) {
-            const specMy = Math.min(myDraw, Math.max(0, target - myKept.length));
-            const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));
-            const myEval = myKept.concat(world.slice(myDrawStart, myDrawStart + specMy));
-            const oppEval = oppKept.concat(world.slice(oppDrawStart, oppDrawStart + specOpp));
-            horizon = scaleH *
-              (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
-          }
-          dMargin = arm.score - rScore + horizon;
-          bagH = Math.max(0, state.bag.length - oppDraw);
+        let horizon = 0;
+        const scaleH = Math.min(1, (state.bag.length - oppDraw) / 7);
+        if (scaleH > 0 && leaveModelReady()) {
+          const specMy = Math.min(myDraw, Math.max(0, target - myKept.length));
+          const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));
+          const myEval = myKept.concat(world.slice(myDrawStart, myDrawStart + specMy));
+          const oppEval = oppKept.concat(world.slice(oppDrawStart, oppDrawStart + specOpp));
+          horizon = scaleH *
+            (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
         }
+        const dMargin = arm.score - rScore + horizon;
+        const bagH = Math.max(0, state.bag.length - oppDraw);
         if (scoreAware) {
           // bagH is the horizon bag size with my turn to move — the
-          // calibration's reference frame at either ply depth.
+          // calibration's reference frame.
           vals[ci].push(winProbAtBag(myScoreMargin + dMargin, bagH));
         } else {
           vals[ci].push(dMargin);
@@ -2946,7 +2944,7 @@ async function findBestMove(rack) {
   ensureLeaveTables();
   // Opponent replies inside a simulation always use fast static play,
   // regardless of the stage config.
-  if (inSimulation) return findBestStaticMove(rack);
+  if (inSimulation) return findBestSimReply(rack);
   const cfg = STAGES[stageFor(state.bag.length)];
   if (cfg.static) return findBestStaticPlay(rack);
   if (state.bag.length === 0) return findBestEndgameMove(rack);
