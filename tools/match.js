@@ -6,7 +6,7 @@
 //   node tools/match.js [--a <fileA>] [--b <fileB>] [--pairs N] [--seed S]
 //                       [--jobs J] [--verbose]
 //
-// Defaults: --a game.js --b game.js --pairs 3 --seed 1 --jobs (cpus, max 4)
+// Defaults: --a game.js --b game.js --pairs 0 (unlimited) --seed 1 --jobs (cpus, max 4)
 //
 // Fairness ("color swap"): each pair uses one seeded bag shuffle and plays
 // it twice with the seats swapped, so both engines see the exact same
@@ -57,7 +57,7 @@ for (const [ch, [, v]] of Object.entries(TILE_DATA)) LETTER_VALUES[ch] = v;
 
 function parseArgs(argv) {
   const opts = {
-    a: 'game.js', b: 'game.js', pairs: 3, seed: 1,
+    a: 'game.js', b: 'game.js', pairs: 0, seed: 1,
     jobs: Math.max(1, Math.min(4, os.cpus().length - 1)),
     verbose: false, playOne: null,
   };
@@ -84,10 +84,10 @@ function parseArgs(argv) {
     else { console.error(`Unknown argument: ${arg}`); process.exit(2); }
   }
   if (!opts.playOne &&
-      (!Number.isInteger(opts.pairs) || opts.pairs < 1 ||
+      (!Number.isInteger(opts.pairs) || opts.pairs < 0 ||
        !Number.isInteger(opts.seed) ||
        !Number.isInteger(opts.jobs) || opts.jobs < 1)) {
-    console.error('--pairs and --jobs must be positive integers, --seed an integer.');
+    console.error('--pairs must be a non-negative integer (0 = unlimited), --jobs a positive integer, --seed an integer.');
     process.exit(2);
   }
   return opts;
@@ -417,14 +417,18 @@ function runWorker(spec) {
   });
 }
 
+// specs: an array, or a lazy { length, at(i) } source (length may be
+// Infinity — results are not retained then; tallies live in onResult).
 async function runPool(specs, jobs, onResult) {
-  const results = new Array(specs.length);
+  const get = Array.isArray(specs) ? i => specs[i] : i => specs.at(i);
+  const results = Number.isFinite(specs.length) ? new Array(specs.length) : null;
   let next = 0;
   async function drain() {
     while (next < specs.length) {
       const i = next++;
-      results[i] = await runWorker(specs[i]);
-      if (onResult) onResult(results[i]);
+      const r = await runWorker(get(i));
+      if (results) results[i] = r;
+      if (onResult) onResult(r);
     }
   }
   await Promise.all(Array.from({ length: Math.min(jobs, specs.length) }, drain));
@@ -451,16 +455,19 @@ async function main() {
 
   console.log(`Engine A: ${aFile}`);
   console.log(`Engine B: ${bFile}`);
-  console.log(`Pairs: ${opts.pairs} (${opts.pairs * 2} games), base seed: ${opts.seed}, jobs: ${opts.verbose ? 1 : opts.jobs}\n`);
+  console.log(`Pairs: ${opts.pairs === 0 ? 'unlimited' : `${opts.pairs} (${opts.pairs * 2} games)`}, base seed: ${opts.seed}, jobs: ${opts.verbose ? 1 : opts.jobs}\n`);
 
-  // Two games per pair: same seeded bag, seats swapped.
-  const specs = [];
-  for (let p = 0; p < opts.pairs; p++) {
-    const seed = opts.seed + p;
-    const bag = buildSeededBag(mulberry32(seed));
-    specs.push({ a: aFile, b: bFile, swap: false, bag, seed, staticOnly: opts.static, aEval: opts.aEval, bEval: opts.bEval });
-    specs.push({ a: aFile, b: bFile, swap: true, bag, seed, staticOnly: opts.static, aEval: opts.aEval, bEval: opts.bEval });
-  }
+  // Two games per pair: same seeded bag, seats swapped. Specs materialize
+  // lazily so an unlimited run (--pairs 0, the default) holds no upfront
+  // array; games arrive until interrupted.
+  const nPairs = opts.pairs === 0 ? Infinity : opts.pairs;
+  const specs = {
+    length: nPairs * 2,
+    at(i) {
+      const seed = opts.seed + (i >> 1);
+      return { a: aFile, b: bFile, swap: (i & 1) === 1, bag: buildSeededBag(mulberry32(seed)), seed, staticOnly: opts.static, aEval: opts.aEval, bEval: opts.bEval };
+    },
+  };
 
   const t0 = Date.now();
   // Live cumulative summary table on an exponential schedule (first after
@@ -510,7 +517,8 @@ async function main() {
   let results;
   if (opts.verbose) {
     results = [];
-    for (const spec of specs) {
+    for (let i = 0; i < specs.length; i++) {
+      const spec = specs.at(i);
       const label = `seed ${spec.seed} ${spec.swap ? 'B-first' : 'A-first'}`;
       const r = await playSpec(spec, true, label);
       results.push(r);
