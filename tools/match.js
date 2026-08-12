@@ -147,6 +147,12 @@ function loadEngine(file, words, opts = {}) {
   // assembles the table in-realm, byte-identical to a prebuilt one.
   const superWPath = path.join(path.dirname(path.resolve(file)), 'leaves-w.txt.gz');
   const superWStr = fs.existsSync(superWPath) ? zlib.gunzipSync(fs.readFileSync(superWPath)).toString() : null;
+  // Endgame leave model travels with the engine dir too (falls back to
+  // the repo root, then to face-value deadwood inside the engine).
+  const egPath = path.join(path.dirname(path.resolve(file)), 'endgame-leaves.json.gz');
+  const egRoot = path.join(path.resolve(__dirname, '..'), 'endgame-leaves.json.gz');
+  const egStr = fs.existsSync(egPath) ? zlib.gunzipSync(fs.readFileSync(egPath)).toString()
+    : fs.existsSync(egRoot) ? zlib.gunzipSync(fs.readFileSync(egRoot)).toString() : null;
   // Minimal browser-global stubs so game.js evaluates headlessly. All DOM
   // access lives inside functions the harness never calls.
   const sandbox = {
@@ -172,11 +178,15 @@ function loadEngine(file, words, opts = {}) {
   // rebuilds an in-realm Uint8Array so per-lookup reads stay fast.
   sandbox.__SUPERLEAVE_STR = superBytes ? superBytes.toString('latin1') : '';
   sandbox.__SUPERLEAVE_WSTR = superWStr || '';
+  sandbox.__EG_LEAVES_STR = egStr || '';
   vm.runInContext(`
     state.wordSet = new Set(__WORDS);
     state.wordsByLength = Array.from({length: 16}, () => []);
     for (const w of state.wordSet) {
       if (w.length <= 15) state.wordsByLength[w.length].push(w);
+    }
+    if (__EG_LEAVES_STR && typeof installEndgameLeaves === 'function') {
+      installEndgameLeaves(JSON.parse(__EG_LEAVES_STR));
     }
     if (__SUPERLEAVE_WSTR && typeof buildSuperTableFromWeights === 'function') {
       installSuperTable(buildSuperTableFromWeights(__SUPERLEAVE_WSTR));
@@ -376,8 +386,8 @@ async function playSpec(spec, verbose, label) {
   // static). Lets a match pit two different stage configs of the same engine.
   const A = loadEngine(spec.a, words, { staticOnly: spec.aStatic ?? spec.staticOnly });
   const B = loadEngine(spec.b, words, { staticOnly: spec.bStatic ?? spec.staticOnly });
-  if (spec.aEval) A.evalInRealm(spec.aEval);
-  if (spec.bEval) B.evalInRealm(spec.bEval);
+  if (spec.aEval) A.evalInRealm(stagesEval(spec.aEval));
+  if (spec.bEval) B.evalInRealm(stagesEval(spec.bEval));
   const seatEngines = spec.swap ? [B, A] : [A, B];
   const g = await playGame(seatEngines, spec.bag, verbose, label);
   // Score margin at low-bag entry, converted to A-minus-B terms (for close-game
@@ -560,7 +570,14 @@ async function main() {
   }
 }
 
-module.exports = { TILE_DATA, LETTER_VALUES, mulberry32, buildSeededBag, loadWords, loadEngine, playGame, runPool };
+// User-supplied realm config snippets run inside `with (STAGES)`, so the
+// concise form 'bag0.depth = 8' works alongside the fully qualified
+// 'STAGES.bag0.depth = 8' (identifiers not on STAGES fall through).
+function stagesEval(code) {
+  return `with (STAGES) { ${code} }`;
+}
+
+module.exports = { TILE_DATA, LETTER_VALUES, mulberry32, buildSeededBag, loadWords, loadEngine, playGame, runPool, stagesEval };
 
 if (require.main === module) {
   main().catch(e => { console.error(e); process.exit(1); });

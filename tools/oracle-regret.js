@@ -35,7 +35,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { mulberry32, buildSeededBag, loadWords, loadEngine, playGame } = require('./match.js');
+const { mulberry32, buildSeededBag, loadWords, loadEngine, playGame, stagesEval } = require('./match.js');
 
 function moveSig(mv) {
   if (!mv) return 'pass';
@@ -105,7 +105,7 @@ async function main() {
   `;
   const makeTests = () => tests.map(code => {
     const e = loadEngine(engineFile, words, {});
-    e.evalInRealm(neutral + code + ';');
+    e.evalInRealm(neutral + stagesEval(code));
     return e;
   });
 

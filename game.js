@@ -152,6 +152,7 @@ async function init() {
     return;
   }
   await loadSuperTable(); // best-effort; leaves the linear model in place on failure
+  await loadEndgameLeaves(); // best-effort; endgame falls back to face-value deadwood
   enablePlayerControls(true);
 }
 
@@ -1860,13 +1861,22 @@ const SIM_BASE = {
 // maps a bag count to its key. Boundaries: bag7 is 7 (LOWBAG_AT-1) and
 // bagGt7 is LOWBAG_AT+ (LOWBAG_AT defaults to 8).
 const STAGES = {
-  // bag0: exact adversarial endgame search over perfect information. The solver
-  // reads this directly. movegenBudget is move generations per decision; root
-  // moves are evaluated best-first and the search keeps the best fully-evaluated
-  // move when it is hit, bounding worst-case time without a hard gate. Sized to
-  // a ~1s p99 endgame move time (p99 992ms at 900 vs 685ms at 600); crowded
-  // opening endgames need far more and stay capped. nodeMoves = moves per node.
-  bag0: { static: false, movegenBudget: 900, nodeMoves: 8 },
+  // bag0: adversarial endgame search. Config found by regret-vs-oracle
+  // benchmarking (tools/oracle-gen-bag0.js / eval-bag0-strategy.js; v7 DB,
+  // 2,390 positions, terminal-depth width-24 oracle under the current
+  // leave model): regret 0.45/decision at 92.8% oracle agreement, p99
+  // ~1.1s — vs 2.73 / 83.2% / ~1.9s for the pre-campaign config (budget
+  // 900, uncapped root, width 8, depth 4, raw-score order). The shape is
+  // a tapered width schedule: broad root coverage (width0 70, trained-
+  // value order with board-aware pricing), wide replies (width1 25 —
+  // ply-1 misses feed root values undamped), a thin counter-move beam
+  // (width2 5), then width 1: every deeper line is best-value-move-or-
+  // pass to the true end of the game, terminal-exact and nearly free
+  // under the transposition table. Root coverage dominates; depth is
+  // uncapped by default; movegenBudget is the latency contract (all
+  // movegen work, ordering included, draws on one meter; on exhaustion
+  // the best fully-searched root or the greedy fallback plays).
+  bag0: { static: false, movegenBudget: 500, width0: 70, width1: 25, width2: 5, width: 1, order: 2, tt: 1 },
   // bag1: near-perfect information. The unseen pool splits into only ~8
   // (opponent rack | bag) worlds, so enumerate them all exactly (enumerate:true)
   // rather than sample — each candidate's mean over the 8 equally-likely worlds
@@ -2008,14 +2018,60 @@ function allMovesSorted(rack, budget) {
     .map(x => x.m);
 }
 
+// Zobrist hashing for the endgame transposition table: one random pair
+// per (square, letter code, blankness), from a fixed seed so the engine
+// stays deterministic. The running hash is XOR-updated by the board
+// mutators (self-inverse, so apply/remove pairs cancel exactly) and
+// recomputed from scratch at each endgame decision entry — game-flow
+// code mutates state.board directly, so the incremental value is only
+// trusted within one search.
+const EG_Z = (() => {
+  const rng = seededRng(0xe9dbe11);
+  const lo = new Int32Array(225 * 54);
+  const hi = new Int32Array(225 * 54);
+  for (let i = 0; i < lo.length; i++) {
+    lo[i] = (rng() * 0x100000000) | 0;
+    hi[i] = (rng() * 0x100000000) | 0;
+  }
+  return { lo, hi };
+})();
+let egHashLo = 0, egHashHi = 0;
+function egCellIndex(r, c, cell) {
+  const code = cell.isBlank ? 26 : cell.letter.toUpperCase().charCodeAt(0) - 65;
+  return (r * 15 + c) * 54 + code * 2 + (cell.isBlank ? 1 : 0);
+}
+function egRecomputeBoardHash() {
+  egHashLo = 0; egHashHi = 0;
+  for (let r = 0; r < 15; r++) {
+    for (let c = 0; c < 15; c++) {
+      const cell = state.board[r][c];
+      if (cell) {
+        const i = egCellIndex(r, c, cell);
+        egHashLo ^= EG_Z.lo[i];
+        egHashHi ^= EG_Z.hi[i];
+      }
+    }
+  }
+}
+
 function applyToBoard(placements) {
   for (const p of placements) {
-    state.board[p.row][p.col] = { letter: p.letter, isBlank: p.isBlank, displayLetter: p.letter };
+    const cell = { letter: p.letter, isBlank: p.isBlank, displayLetter: p.letter };
+    state.board[p.row][p.col] = cell;
+    const i = egCellIndex(p.row, p.col, cell);
+    egHashLo ^= EG_Z.lo[i];
+    egHashHi ^= EG_Z.hi[i];
   }
 }
 
 function removeFromBoard(placements) {
-  for (const p of placements) state.board[p.row][p.col] = null;
+  for (const p of placements) {
+    const cell = state.board[p.row][p.col];
+    const i = egCellIndex(p.row, p.col, cell);
+    egHashLo ^= EG_Z.lo[i];
+    egHashHi ^= EG_Z.hi[i];
+    state.board[p.row][p.col] = null;
+  }
 }
 
 function rackWithout(rack, placements) {
@@ -2042,8 +2098,8 @@ function greedyRolloutMargin(myRack, oppRack, passes, budget) {
   let side = 0, margin = 0, passCount = passes;
 
   for (;;) {
-    const moves = allMovesSorted(racks[side], budget);
-    const m = moves.length > 0 && moves[0].score > 0 ? moves[0] : null;
+    const moves = valueOrdered(allMovesSorted(racks[side], budget), racks[side], racks[1 - side]);
+    const m = moves.find(x => x.score > 0) || null;
     if (!m) {
       passCount++;
       if (passCount >= 2) {
@@ -2076,6 +2132,22 @@ function greedyRolloutMargin(myRack, oppRack, passes, budget) {
 // deducts it from the opponent); two consecutive passes strand both
 // racks. Depth and width are budgeted; frontier nodes are valued by
 // greedy rollout (budget exhaustion falls back to the both-stuck value).
+// Per-decision transposition table (STAGES.bag0.tt = 1): keyed by board
+// hash + both rack multisets + pass count, storing fail-soft values with
+// their remaining depth and bound flag (0 exact, 1 lower, 2 upper). An
+// entry is reusable when it was computed with at least the remaining
+// depth the probing node needs. Hits cost no budget — the meter charges
+// move generation, and a hit replaces one. Interleaved lines (my A/C
+// around the same reply) transpose heavily on exactly the open boards
+// where the meter binds, so the table converts revisits into effective
+// depth on the p99-hard positions.
+let EG_TT = null;
+function egRackKey(rack) {
+  const codes = rack.map(t => (t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65));
+  codes.sort((a, b) => a - b);
+  return codes.join('.');
+}
+
 function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   if (passes >= 2) return rackValueOf(oppRack) - rackValueOf(myRack);
   // Out of budget before this node could be evaluated: abandon the whole
@@ -2084,14 +2156,45 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   // reply subtree got truncated, and could pick worse than greedy — so we
   // unwind to findBestEndgameMove, which falls back to the greedy move.
   if (budget.used >= STAGES.bag0.movegenBudget) throw ENDGAME_ABORT;
-  const plyCap = myRack.length + oppRack.length <= 8 ? 8 : 4;
-  if (ply >= plyCap) {
+  // depth 0/unset = uncapped: search to the game's true end (double-pass
+  // or going out). A positive cap re-enables the greedy-rollout frontier,
+  // kept only as an experiment knob — every measurement since the
+  // transposition table landed says terminal search dominates at prod
+  // budgets.
+  const depth = STAGES.bag0.depth || Infinity;
+  const remaining = Math.max(0, depth - ply);
+  let ttKey = null;
+  if (EG_TT) {
+    ttKey = egHashLo + ',' + egHashHi + '|' + egRackKey(myRack) + '|' + egRackKey(oppRack) + '|' + passes;
+    const e = EG_TT.get(ttKey);
+    if (e && e.r >= remaining) {
+      if (e.f === 0) return e.v;
+      if (e.f === 1 && e.v >= beta) return e.v;
+      if (e.f === 2 && e.v <= alpha) return e.v;
+    }
+  }
+  const ttStore = v => {
+    if (EG_TT) {
+      const f = v >= beta ? 1 : v <= alpha ? 2 : 0;
+      EG_TT.set(ttKey, { v, r: remaining, f });
+    }
+    return v;
+  };
+  if (ply >= depth) {
     // Rollouts complete even if they overshoot the budget slightly — a
     // partial rollout would be meaningless — but their true cost counts.
-    return greedyRolloutMargin(myRack, oppRack, passes, budget);
+    return ttStore(greedyRolloutMargin(myRack, oppRack, passes, budget));
   }
 
-  const moves = allMovesSorted(myRack, budget).slice(0, STAGES.bag0.nodeMoves);
+  // Per-ply beam widths: width1 (ply 1) and width2 (ply 2) default to
+  // width. Early-ply misses feed root values nearly undamped, and
+  // shallow nodes are the ones the transposition table deduplicates
+  // least.
+  const w = ply === 1 ? (STAGES.bag0.width1 || STAGES.bag0.width)
+    : ply === 2 ? (STAGES.bag0.width2 || STAGES.bag0.width)
+    : STAGES.bag0.width;
+  const moves = valueOrdered(allMovesSorted(myRack, budget), myRack, oppRack)
+    .slice(0, w);
   let best = -Infinity;
   for (const m of moves) {
     const newRack = rackWithout(myRack, m.placements);
@@ -2104,26 +2207,117 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
       removeFromBoard(m.placements);
     }
     if (val > best) best = val;
-    if (best >= beta) return best;
+    if (best >= beta) return ttStore(best);
   }
 
   // Passing is always legal (and occasionally best, e.g. to avoid
   // opening the only out-spot for the opponent).
   const passVal = -endgameSearch(oppRack, myRack, passes + 1, ply + 1, -beta, -Math.max(alpha, best), budget);
-  return Math.max(best, passVal);
+  return ttStore(Math.max(best, passVal));
+}
+
+// First-order endgame leave model: the fitted margin VALUE of keeping
+// each tile (A..Z, blank last) at bag 0 — same sense as the midgame
+// leave model: higher = better to hold. Regressed from the bag0 oracle
+// DB's per-move reference values with per-position intercepts absorbed
+// (tools/fit-endgame-leaves.js). Face-value deadwood is a poor proxy:
+// Endgame leave model, loaded from endgame-leaves.json.gz (see
+// tools/fit-endgame-leaves.js --out; embedded-script fallback for
+// file://). values/pairs: the interior evaluator, fit blind to the
+// board; boardValues/boardPairs: the order-2 root evaluator, fit
+// jointly with playability buckets so buckets + pairs double-count
+// nothing. Until installed, endgameStaticValue falls back to
+// face-value deadwood.
+let EG_LEAVE_VALUES = null;
+let EG_LEAVE_PAIRS = null;
+let EG_LEAVE_BOARD_VALUES = null;
+let EG_LEAVE_BOARD_PAIRS = null;
+const EG_PAIR_IDX = (a, b) => (a <= b ? b * (b + 1) / 2 + a : a * (a + 1) / 2 + b);
+function endgameLeavePairSum(leave, table) {
+  let s = 0;
+  for (let i = 0; i < leave.length; i++) {
+    const a = leave[i].isBlank ? 26 : leave[i].letter.toUpperCase().charCodeAt(0) - 65;
+    for (let j = i + 1; j < leave.length; j++) {
+      const b = leave[j].isBlank ? 26 : leave[j].letter.toUpperCase().charCodeAt(0) - 65;
+      s += table[EG_PAIR_IDX(a, b)];
+    }
+  }
+  return s;
+}
+
+function endgameLeaveValue(leave) {
+  if (!EG_LEAVE_VALUES) return -rackValueOf(leave); // model not loaded: face deadwood
+  let s = 0;
+  for (const t of leave) s += EG_LEAVE_VALUES[t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65];
+  if (EG_LEAVE_PAIRS && leave.length > 1) s += endgameLeavePairSum(leave, EG_LEAVE_PAIRS);
+  return s;
 }
 
 // Static endgame value of a single play, consistent with the search's own
 // terminal rules: going out banks twice the opponent's rack (endGame credits
-// it to the finisher and deducts it from the opponent), otherwise the kept
-// tiles are dead weight deducted from your score at game end. The opponent's
-// rack is constant across the move choice, so its value only matters in the
-// go-out branch. Used to choose the greedy fallback move when the budget is
-// exhausted before any root move is fully searched — ranking by this rather
-// than raw score prices the leftover rack the aborted search never got to.
+// it to the finisher and deducts it from the opponent — exact rule
+// arithmetic, face values); otherwise the kept tiles are priced by the
+// trained keep costs above, not their faces. The opponent's rack is
+// constant across the move choice, so it only matters in the go-out
+// branch. Ranks the greedy fallback on budget abort, and — under
+// order 1 — the root, the interior beam, and the rollout policy.
 function endgameStaticValue(move, leave, oppRack) {
   if (leave.length === 0) return move.score + 2 * rackValueOf(oppRack);
-  return move.score - rackValueOf(leave);
+  return move.score + endgameLeaveValue(leave);
+}
+
+// Installs the fitted endgame leave model (format v1: values, pairs,
+// boardValues, boardPairs — see tools/fit-endgame-leaves.js).
+function installEndgameLeaves(data) {
+  if (!data || data.v !== 1) throw new Error('endgame-leaves: unsupported format');
+  EG_LEAVE_VALUES = data.values;
+  EG_LEAVE_PAIRS = data.pairs;
+  EG_LEAVE_BOARD_VALUES = data.boardValues;
+  EG_LEAVE_BOARD_PAIRS = data.boardPairs;
+}
+
+// Best-effort load, mirroring the superleave chain: fetch first (skipped
+// on file://), embedded data script as fallback.
+async function loadEndgameLeaves() {
+  try {
+    if (!IS_FILE_URL) {
+      try {
+        const resp = await fetch('endgame-leaves.json.gz');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const stream = resp.body.pipeThrough(new DecompressionStream('gzip'));
+        installEndgameLeaves(JSON.parse(await new Response(stream).text()));
+        return;
+      } catch (fetchErr) {
+        installEndgameLeaves(JSON.parse(await (await loadEmbeddedGz('endgame-leaves.data.js', 'EG_LEAVES_B64')).text()));
+        return;
+      }
+    }
+    installEndgameLeaves(JSON.parse(await (await loadEmbeddedGz('endgame-leaves.data.js', 'EG_LEAVES_B64')).text()));
+  } catch (e) {
+    // Endgame plays on face-value deadwood without the model.
+  }
+}
+
+// Distinct board locations each leave tile can occupy in a legal play
+// using only the leave, on the current board. One movegen, budget-counted.
+function leaveBoardCounts(leave, budget) {
+  const locs = Array.from({ length: 27 }, () => new Set());
+  for (const mv of allMovesSorted(leave, budget)) {
+    for (const p of mv.placements) {
+      locs[p.isBlank ? 26 : p.letter.toUpperCase().charCodeAt(0) - 65].add(p.row * 15 + p.col);
+    }
+  }
+  return locs.map(s => s.size);
+}
+
+// Under order 1, re-sort a move list by static endgame value (stable:
+// ties keep the incoming score order). Identity under order 0.
+function valueOrdered(moves, rack, oppRack) {
+  if (STAGES.bag0.order < 1) return moves;
+  return moves
+    .map(m => ({ m, v: endgameStaticValue(m, rackWithout(rack, m.placements), oppRack) }))
+    .sort((a, b) => b.v - a.v)
+    .map(x => x.m);
 }
 
 // The greedy fallback: the positive-scoring play with the best static
@@ -2150,15 +2344,74 @@ function greedyEndgameMove(rack, moves, oppRack) {
 async function findBestEndgameMove(rack) {
   const oppRack = deriveOpponentRack(rack);
   const budget = { used: 0 };
+  EG_TT = STAGES.bag0.tt ? new Map() : null;
+  if (EG_TT) egRecomputeBoardHash();
   const moves = allMovesSorted(rack, budget);
   if (moves.length === 0) return null;
+  // order 1: evaluate roots in static-endgame-value order (score minus
+  // kept deadwood, going-out credit included) instead of raw score. Prices
+  // tile-unloading — the Q-dump scoring 6 outranks a 15-point move that
+  // keeps the Q — so the best-first budget (and the width0 cut) spend on
+  // plausible endgame moves, not just high scorers. Sort is stable: ties
+  // keep score order, and determinism is preserved.
+  // Root candidate selection. Each mode produces (move, value) pairs in
+  // its own ordering currency: raw score (order 0), static endgame value
+  // (order 1), or two-stage board-aware value (order 2 — stage 1 orders
+  // by flat static value for free, stage 2 reprices only the top
+  // 2*width0 candidates against their post-move boards so the cost is
+  // bounded by the cut size, not the legal-move count). width0 caps how
+  // many survive. The abort fallback still sees every move.
+  let scored;
+  if (STAGES.bag0.order === 2 && EG_LEAVE_BOARD_VALUES) {
+    const flatScored = moves
+      .map(mv => ({ mv, v: endgameStaticValue(mv, rackWithout(rack, mv.placements), oppRack) }))
+      .sort((a, b) => b.v - a.v);
+    const K = STAGES.bag0.width0 > 0 ? Math.min(flatScored.length, 2 * STAGES.bag0.width0) : flatScored.length;
+    const cap = EG_LEAVE_BOARD_VALUES[0].length - 1;
+    const repriced = flatScored.slice(0, K).map(({ mv, v: flatV }) => {
+      // The meter governs ordering too: once spent, remaining candidates
+      // keep their stage-1 flat value — the budget is a latency contract,
+      // and pricing is not exempt from it.
+      if (budget.used >= STAGES.bag0.movegenBudget) return { mv, v: flatV };
+      const leave = rackWithout(rack, mv.placements);
+      let v;
+      if (leave.length === 0) {
+        v = mv.score + 2 * rackValueOf(oppRack);
+      } else {
+        applyToBoard(mv.placements);
+        try {
+          const counts = leaveBoardCounts(leave, budget);
+          v = mv.score;
+          for (const t of leave) {
+            const cd = t.isBlank ? 26 : t.letter.toUpperCase().charCodeAt(0) - 65;
+            v += EG_LEAVE_BOARD_VALUES[cd][Math.min(counts[cd], cap)];
+          }
+          if (EG_LEAVE_BOARD_PAIRS && leave.length > 1) v += endgameLeavePairSum(leave, EG_LEAVE_BOARD_PAIRS);
+        } finally {
+          removeFromBoard(mv.placements);
+        }
+      }
+      return { mv, v };
+    }).sort((a, b) => b.v - a.v);
+    scored = repriced.concat(flatScored.slice(K));
+  } else if (STAGES.bag0.order === 1) {
+    scored = moves
+      .map(mv => ({ mv, v: endgameStaticValue(mv, rackWithout(rack, mv.placements), oppRack) }))
+      .sort((a, b) => b.v - a.v);
+  } else {
+    scored = moves.map(mv => ({ mv, v: mv.score }));
+  }
+  if (STAGES.bag0.width0 > 0 && scored.length > STAGES.bag0.width0) {
+    scored = scored.slice(0, STAGES.bag0.width0);
+  }
+  const rootMoves = scored.map(x => x.mv);
 
   // The reply search mutates the board and unwinds un-cleanly if it
   // aborts, so snapshot to restore the discarded move's placements.
   const boardSnapshot = state.board.map(r => r.slice());
   let bestMove = null;
   let bestVal = -Infinity;
-  for (const m of moves) {
+  for (const m of rootMoves) {
     await yieldToUI();
     const newRack = rackWithout(rack, m.placements);
     let val;

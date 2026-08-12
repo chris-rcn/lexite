@@ -17,6 +17,7 @@ const repo = path.resolve(__dirname, '..');
 for (const [gz, out, name] of [
   ['words.txt.gz', 'words.data.js', 'WORDS_GZ_B64'],
   ['leaves-w.txt.gz', 'leaves.data.js', 'LEAVES_W_B64'],
+  ['endgame-leaves.json.gz', 'endgame-leaves.data.js', 'EG_LEAVES_B64'],
 ]) {
   const gzPath = path.join(repo, gz);
   if (!fs.existsSync(gzPath)) {
