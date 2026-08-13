@@ -6,7 +6,7 @@
 // decision per seeded static self-play game with a much stronger
 // reference — all three caps configurable and lifted — storing the top-M
 // root moves' values plus the pass value, so any budgeted configuration can
-// be graded later by looking up the exact-er value of the move it picks
+// be graded later by looking up the reference value of the move it picks
 // (see eval-bag0-strategy.js). The endgame is score-margin arithmetic only,
 // so the benchmark is independent of the leave model and survives re-ships.
 //
@@ -74,7 +74,7 @@ Q.evalInRealm(`
   // Value the top-M roots and the pass with the reference caps. Top-M
   // is selected by the reference ordering (static endgame value under
   // order 1) — the same currency every graded config picks by, so the
-  // moves configs actually choose land in the exactly-valued set instead
+  // moves configs actually choose land in the reference-valued set instead
   // of relying on the screened sweep. Full root windows (no best-so-far
   // pruning): every stored value is the reference value of that move,
   // independent of evaluation order.
@@ -122,8 +122,8 @@ Q.evalInRealm(`
       // Containment sweep: every root move beyond the stored top-M gets a
       // windowed probe against the running best. Hopeless moves cut off
       // almost immediately (fail-soft: a return >= beta proves the move
-      // cannot beat the best); a move that does beat it returns an exact
-      // value and joins the stored arms. The record's best is therefore
+      // cannot beat the best); a move that does beat it returns an
+      // in-window value and joins the stored arms. The record's best is therefore
       // the best over ALL root moves — configs that explore past raw
       // score order are graded against a valid target.
       let best = Math.max(pass, ...out.map(x => x[1]));
@@ -137,7 +137,7 @@ Q.evalInRealm(`
           // refutation proving the move sits more than screenMargin
           // behind the best is accepted from the cheap search (the
           // overwhelmingly common case). Stage 2 gives survivors the
-          // full-depth exact probe; only full-depth values are stored.
+          // full-depth reference probe; only full-depth values are stored.
           applyToBoard(mv.placements);
           try {
             STAGES.bag0.depth = ${SCREEN_DEPTH};
@@ -185,7 +185,7 @@ async function main() {
   // toward a fixed point across regenerations.
   // v6: top-M roots are selected by the reference ordering (static
   // endgame value), not raw score — the currency graded configs pick by,
-  // so their choices land in the exactly-valued set instead of leaning
+  // so their choices land in the reference-valued set instead of leaning
   // on the screened sweep.
   // v7: the reference search runs a per-position transposition table —
   // values may differ marginally from an uncached run (cache hits serve
