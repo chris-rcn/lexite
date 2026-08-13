@@ -1844,6 +1844,25 @@ const SIM_BASE = {
   samples: 30,      // sampled worlds, shared across candidates
   minWorlds: 6,     // worlds evaluated before pruning may trigger
   pruneEvery: 2,    // prune check cadence (in worlds) after the minimum
+  // movegenBudget (terminal stages): work meter for a decision, counted
+  // in GENERATED MOVES (plus ~10/ply scan overhead) — the unit tracks
+  // actual scan cost, unlike plies, whose cost spans 40x with board
+  // openness. Roughly 30-40 units/ms; ~30k = 1s. 0 = unmetered. On
+  // exhaustion the world loop stops at a whole-world boundary and the
+  // decision is made from the worlds every candidate has completed —
+  // pairing preserved, graceful degradation, at least one world always
+  // finishes. Lets a quality config ship inside a latency envelope
+  // instead of being downsized.
+  movegenBudget: 0,
+  // egMidBlend: the low-bag leave term is the convex mix
+  // egMidBlend*midgame + (1 - egMidBlend)*endgame (total weight 1; the
+  // knob only splits the models). -1 = auto: bag/7, the midgame share
+  // shrinking as the endgame approaches. The stage owning the CURRENT
+  // bag count governs, including inside playouts. Bag1 pins 0 (pure
+  // draw-aware endgame model — measured best); other low-bag stages
+  // keep auto pending per-stage evidence. With no endgame model loaded,
+  // the legacy bag/7-damped midgame-only term applies.
+  egMidBlend: -1,
   // Bayesian overrule. Models the true value gap of a challenger vs the
   // incumbent as mu ~ Normal(dStatic, tau^2) — the static move+leave gap is
   // the prior mean, priorSd is the prior SD (in points) — updates with the
@@ -1878,25 +1897,32 @@ const STAGES = {
   // the best fully-searched root or the greedy fallback plays).
   bag0: { static: false, movegenBudget: 500, width0: 70, width1: 25, width2: 5, width: 1, order: 2, tt: 1 },
   // bag1: near-perfect information. The unseen pool splits into only ~8
-  // (opponent rack | bag) worlds, so enumerate them all exactly (enumerate:true)
-  // rather than sample — each candidate's mean over the 8 equally-likely worlds
-  // is its exact expected value under the rollout, with no sampling variance and
-  // no gate needed (paired-mean argmax). Over 518 exact
-  // bag=1 solves: mean regret vs the endgame solver 1.82 pts (static 4.65), 64%
-  // optimal (static 48%), p99 ~1.1s — the quality ceiling reachable under ~1s
-  // with a greedy rollout (the last ~1.8 pts needs the exact solver at
-  // 15-43s/move).
-  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 8, margin: 0, scoreAware: 0 },
-  // bag2: still near-perfect info, but the unseen pool now splits into C(9,2)=36
-  // worlds — too many to enumerate all of within ~1s (full enumeration p99 ~3s).
-  // Instead sample 10 of the 36 worlds and pick the argmax expected value under
-  // the greedy rollout (argmax rule). A few crowded-board positions have
-  // intrinsically slow rollouts, so the tail is bounded by the world count, not
-  // a node cap (truncation doesn't help when per-node cost is high). Over 105
-  // exact bag=2 solves: mean regret vs the endgame solver 1.43 pts (static 4.20),
-  // 66% optimal (static 54%), p99 ~850ms. More worlds cut regret (24 -> 0.91)
-  // but push p99 past 1s; 10 is the most that fits the budget.
-  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 6, margin: 0, scoreAware: 0 },
+  // (opponent rack | bag) worlds, so enumerate them all exactly rather
+  // than sample; candidates are cut by the draw-aware endgame-model
+  // ordering (egMidBlend 0: the midgame model measured no remaining
+  // value at bag 1), evaluated by endgame-aware playouts, with early
+  // pairwise retirement (minWorlds 3 / pruneEvery 1) funding 10-wide
+  // root coverage at the 6-wide cost. Against the v3 exact-solve
+  // benchmark (width-12 terminal referee): regret 1.93/decision at ~64%
+  // optimal, p99 ~0.9s, vs 2.71 / 58% for the pre-campaign stage on the
+  // same judge. Prior-shrinkage selection (bayes) measured strictly
+  // harmful here: enumerated playout means are exact averages of biased
+  // per-world values, and the across-world spread the posterior reads as
+  // noise is genuine bag variance.
+  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 10, margin: 0, minWorlds: 3, pruneEvery: 1, scoreAware: 0, egMidBlend: 0 },
+  // bag2: the unseen pool splits into C(9,2)=36 worlds — enumerated
+  // exactly (samples 100 is only the enumeration-arming ceiling; it must
+  // stay >= 36). The world list is seeded-shuffled at build so the
+  // movegenBudget meter (generated moves, ~30-80 units/ms by board) can
+  // truncate to an unbiased prefix, cutting at candidate boundaries with
+  // whole-world rollback. Early pairwise retirement (minWorlds 5) frees
+  // meter for survivors' worlds. Bayes off: as at bag1, enumerated
+  // across-world spread is genuine bag variance, not noise — shrinkage
+  // measured 0.4 worse (sampled worlds are the regime where it helps).
+  // Config found by constrained search on the v3 exact-solve benchmark
+  // (229 positions, p99 <= 1100ms required): regret 1.27/decision at 66%
+  // optimal, p99 ~1040ms (sampled-mode best on the same judge: 1.57).
+  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, samples: 100, candidates: 9, margin: 0, minWorlds: 5, pruneEvery: 1, egMidBlend: 0.18, movegenBudget: 110000, scoreAware: 0 },
   // bag3: the unseen pool splits into C(10,3)=120 worlds — far too many to
   // enumerate within ~1s (full enumeration runs p99 ~7s). Sample 10 of them over
   // 5 candidates and pick the argmax under the greedy rollout (argmax rule).
@@ -2067,6 +2093,7 @@ function applyToBoard(placements) {
 function removeFromBoard(placements) {
   for (const p of placements) {
     const cell = state.board[p.row][p.col];
+    if (!cell) continue; // abort paths restore the board wholesale first
     const i = egCellIndex(p.row, p.col, cell);
     egHashLo ^= EG_Z.lo[i];
     egHashHi ^= EG_Z.hi[i];
@@ -2243,6 +2270,44 @@ function endgameLeavePairSum(leave, table) {
     }
   }
   return s;
+}
+
+
+
+// Counts-vector form of the interior endgame evaluator (singles + pair
+// terms), for callers that hold rack counts rather than tile arrays.
+function endgameLeaveValueFromCounts(counts) {
+  if (!EG_LEAVE_VALUES) return null;
+  let s = 0;
+  for (let a = 0; a < 27; a++) {
+    const na = counts[a];
+    if (na <= 0) continue;
+    s += na * EG_LEAVE_VALUES[a];
+    if (EG_LEAVE_PAIRS) {
+      if (na > 1) s += (na * (na - 1) / 2) * EG_LEAVE_PAIRS[EG_PAIR_IDX(a, a)];
+      for (let b = a + 1; b < 27; b++) {
+        if (counts[b] > 0) s += na * counts[b] * EG_LEAVE_PAIRS[EG_PAIR_IDX(a, b)];
+      }
+    }
+  }
+  return s;
+}
+
+// Draw-aware endgame leave: E[ endgameLeave(leave + one drawn tile) ]
+// over the unseen pool — the bagAwareLeaveValue construction with the
+// endgame model. First-order like its midgame sibling (one draw priced
+// even when the real refill is larger); prices partner-completion (the
+// pool's last U rescuing a kept Q) that the as-is leave cannot see.
+function egBagAwareLeaveValue(counts, unseen, total) {
+  let ev = 0;
+  for (let t = 0; t < 27; t++) {
+    const u = unseen[t];
+    if (u <= 0) continue;
+    counts[t]++;
+    ev += u * endgameLeaveValueFromCounts(counts);
+    counts[t]--;
+  }
+  return ev / total;
 }
 
 function endgameLeaveValue(leave) {
@@ -2457,6 +2522,10 @@ async function findBestEndgameMove(rack) {
 // Scan every legal move, reporting each with its static value (score plus
 // damped leave value of the kept tiles) to the sink, in the canonical
 // deterministic order.
+// Generated-move count of the most recent static scan — the terminal
+// meter's cost proxy for playout plies that route through the scanner.
+let EG_SCAN_MOVE_COUNT = 0;
+
 async function scanStaticMoves(rack, onMove) {
   // The kept rack only has a future while there are tiles to draw into —
   // as the bag runs out, selection fades back to raw score.
@@ -2489,6 +2558,7 @@ async function scanStaticMoves(rack, onMove) {
   // leave, so leave values are memoized per turn by the multiset of
   // played tiles (canonical sorted-code key).
   const leaveCache = new Map();
+  let genCount = 0;
   let lastYield = performance.now();
 
   for (let i = 0; i < 15; i++) {
@@ -2502,6 +2572,7 @@ async function scanStaticMoves(rack, onMove) {
 
     for (const isHoriz of [true, false]) {
       const moves = findMovesInLine(i, isHoriz, rack);
+      genCount += moves.length;
       for (const m of moves) {
         if (m.score <= 0) continue;
         let val = m.score;
@@ -2520,19 +2591,43 @@ async function scanStaticMoves(rack, onMove) {
           let lv = leaveCache.get(key);
           if (lv === undefined) {
             for (const c of codes) rackCounts[c]--;
-            lv = unseenTotal > 0
+            const mid = unseenTotal > 0
               ? bagAwareLeaveValue(rackCounts, unseenCounts, unseenTotal)
               : leaveValueFromCounts(rackCounts);
+            // Endgame side of the mix: draw-aware (pool expectation of the
+            // post-draw leave) while tiles remain to draw; as-is at bag 0.
+            const eg = (leaveScale < 1 && EG_LEAVE_VALUES)
+              ? (leaveScale > 0 && unseenTotal > 0
+                  ? egBagAwareLeaveValue(rackCounts, unseenCounts, unseenTotal)
+                  : endgameLeaveValueFromCounts(rackCounts))
+              : null;
+            if (eg !== null) {
+              // Convex mix, split by the current bag count's stage. The
+              // auto split uses the POST-DRAW bag count of this specific
+              // move — a 2-tile play at bag 2 leads to a pure endgame and
+              // is priced as one, while a 1-tile play at the same rack
+              // keeps a tile of midgame future. (Pinned egMidBlend values
+              // are move-independent by definition.)
+              const postScale = Math.min(1, Math.max(0, state.bag.length - codes.length) / 7);
+              const cfgBlend = STAGES[stageFor(state.bag.length)].egMidBlend;
+              const mShare = cfgBlend >= 0 ? cfgBlend : postScale;
+              lv = mShare * mid + (1 - mShare) * eg;
+            } else {
+              // Legacy (endgame model absent): damped midgame only, at
+              // the same per-move post-draw scale.
+              lv = Math.min(1, Math.max(0, state.bag.length - codes.length) / 7) * mid;
+            }
             for (const c of codes) rackCounts[c]++;
             leaveCache.set(key, lv);
           }
-          val += leaveScale * lv;
+          val += lv;
         }
         if (ditherRng) val += evalDither * (ditherRng() * 2 - 1);
         onMove(m, val);
       }
     }
   }
+  EG_SCAN_MOVE_COUNT = genCount;
 }
 
 // Static play, exchange included: the best move by static value, unless
@@ -2641,7 +2736,7 @@ const PLAYOUT_PLY_GUARD = 24;
 // the exact final margin for the mover. The only cutoff is a hard ply guard: a
 // pathological board where neither side terminates falls back to the damped
 // leave differential rather than looping forever.
-async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize) {
+async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, meter) {
   let margin = moveScore;
   const applied = [];
   let myRack = myKeptTiles.slice();
@@ -2664,7 +2759,30 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize) {
     }
     state.bag = bagArr; // consumers only read its length
     const mover = side === 1 ? oppRack : myRack;
-    const mv = await findBestSimReply(mover);
+    let mv;
+    let gen = 0; // generated moves this ply — the meter's cost unit
+    if (bagArr.length === 0) {
+      // Endgame-aware playout policy: with the bag empty this playout IS
+      // an endgame, so pick by trained endgame value (score + leave +
+      // go-out credit) instead of the raw-score greed the midgame leave
+      // scaling degenerates to. Same substitution that carried the bag0
+      // campaign: trained static values over raw score. Zero/low-score
+      // deadwood dumps become choosable; termination is guaranteed by
+      // tile consumption and the ply guard.
+      const other = side === 1 ? myRack : oppRack;
+      let bv = -Infinity;
+      mv = null;
+      const gens = allMovesSorted(mover, { used: 0 });
+      gen = gens.length;
+      for (const m of gens) {
+        const v = endgameStaticValue(m, rackWithout(mover, m.placements), other);
+        if (v > bv) { bv = v; mv = m; }
+      }
+    } else {
+      mv = await findBestSimReply(mover);
+      gen = EG_SCAN_MOVE_COUNT;
+    }
+    if (meter) meter.used += 10 + gen; // 10 ~ fixed per-scan overhead
     if (!mv) {
       // True pass: no move and no exchange possible. Board and rack are
       // unchanged, so two in a row is a genuine deadlock (the real game's
@@ -2878,6 +2996,14 @@ async function findBestSimMove(rack, cfg) {
       for (let k = 0; k < pool.length; k++) (inBag[k] ? bagTiles : opp).push(pool[k]);
       worlds.push(opp.concat(bagTiles)); // opponent rack, then bag draw order
     }
+    // Shuffle: indexSubsets yields splits in a deterministic combinatorial
+    // order, so a meter cutoff over a prefix would be a biased subset of
+    // worlds. A seeded shuffle makes any prefix exchangeable.
+    const rng = seededRng(positionHash(rack));
+    for (let i = worlds.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [worlds[i], worlds[j]] = [worlds[j], worlds[i]];
+    }
   } else {
     const rng = seededRng(positionHash(rack));
     for (let w = 0; w < cfg.samples; w++) {
@@ -2948,13 +3074,24 @@ async function findBestSimMove(rack, cfg) {
   const myScoreMargin = state.computerScore - state.playerScore;
   const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
+  // Terminal-stage meter (see SIM_BASE.movegenBudget).
+  const meter = { used: 0 };
   try {
     // World-major so surviving candidates advance together and pruning
-    // can retire hopeless challengers early.
+    // can retire hopeless challengers early; the meter cuts at candidate
+    // boundaries with whole-world rollback so every candidate is judged
+    // on the same worlds.
     for (let w = 0; w < M; w++) {
       const world = worlds[w];
+      // Mid-world meter cutoff: checked before each playout, so the
+      // overshoot is bounded by one playout, not one world. An aborted
+      // world's partial contributions are rolled back below — every
+      // candidate is always judged on identical complete worlds.
+      const preLens = toTerminal && cfg.movegenBudget > 0 ? vals.map(v => v.length) : null;
+      let worldAborted = false;
       for (let ci = 0; ci < K; ci++) {
         if (!alive[ci]) continue;
+        if (preLens && meter.used >= cfg.movegenBudget) { worldAborted = true; break; }
         const arm = arms[ci];
         const myKept = arm.kept;
         if (arm.placements) applyToBoard(arm.placements);
@@ -2962,7 +3099,7 @@ async function findBestSimMove(rack, cfg) {
           // Near the endgame the sampled world is cheap to finish: play
           // it out and score the exact final margin — no horizon
           // heuristic, and the leave taper plays no evaluation role.
-          const margin = await simPlayoutValue(arm.score, myKept, world, oppSize);
+          const margin = await simPlayoutValue(arm.score, myKept, world, oppSize, meter);
           if (arm.placements) removeFromBoard(arm.placements);
           // Score-aware: smoothed win credit — the playout's exact final
           // margin through Phi at the calibrated across-world spread for
@@ -3026,6 +3163,10 @@ async function findBestSimMove(rack, cfg) {
         if (arm.placements) removeFromBoard(arm.placements);
       }
 
+      if (worldAborted) {
+        for (let ci = 0; ci < K; ci++) vals[ci].length = preLens[ci];
+        break;
+      }
       // Prune challengers that are confidently worse than the incumbent —
       // they can never win the final overrule gate, so stop paying for
       // their reply searches. The incumbent (candidate 0) is never pruned.
@@ -3057,13 +3198,19 @@ async function findBestSimMove(rack, cfg) {
   // sampled uncertainty are already folded in, so no separate significance
   // gate is needed. Otherwise (terminal stages, whose few worlds are exact
   // or near-exact expectations) a positive paired mean suffices: argmax.
+  // Meter floor: no world completed inside the budget — the static best
+  // plays (the graceful minimum on pathologically expensive boards).
+  if (vals[0].length === 0) return armResult(arms[0]);
+  // Selection runs over the worlds actually completed — under the meter
+  // that can be fewer than the planned M.
+  const NW = vals[0].length;
   let bestIdx = 0;
   for (let ci = 1; ci < K; ci++) {
     if (!alive[ci]) continue;
     if (cfg.bayes) {
-      if (bayesProb(vals, ci, bestIdx, M) > cfg.overruleP) bestIdx = ci;
+      if (bayesProb(vals, ci, bestIdx, NW) > cfg.overruleP) bestIdx = ci;
     } else {
-      const [mean] = pairedStats(vals, ci, bestIdx, M);
+      const [mean] = pairedStats(vals, ci, bestIdx, NW);
       if (mean > 0) bestIdx = ci;
     }
   }
@@ -3081,7 +3228,7 @@ async function findBestSimMove(rack, cfg) {
     TRACE.lastNArms = K;
     TRACE.lastGap = override ? arms[0].staticVal - arms[bestIdx].staticVal : 0;
     if (override) {
-      const [mean, se] = pairedStats(vals, bestIdx, 0, M);
+      const [mean, se] = pairedStats(vals, bestIdx, 0, NW);
       TRACE.lastZ = se > 0 ? mean / se : (mean > 0 ? 1e9 : 0);
       TRACE.overrides++;
       TRACE.gaps.push(TRACE.lastGap);
@@ -3152,6 +3299,15 @@ async function findBestPreEndgameMove(rack, cfg) {
   const boardSnap = state.board.map(r => r.slice());
   const savedBudget = STAGES.bag0.movegenBudget;
   STAGES.bag0.movegenBudget = cfg.preendBudget;
+  // Fresh transposition table for this decision: worlds differ by one
+  // drawn tile and candidates share the pre-move board, so the solves
+  // overlap heavily — the cross-world sharing that makes per-world
+  // endgame valuation affordable. Keys carry the board hash, which must
+  // be recomputed at entry (game flow mutates the board directly) and
+  // after any abort restore (an aborted search leaves the incremental
+  // hash out of sync).
+  EG_TT = STAGES.bag0.tt ? new Map() : null;
+  if (EG_TT) egRecomputeBoardHash();
   const budget = { used: 0 };
   let best = null, bestEv = -Infinity;
   try {
@@ -3176,7 +3332,9 @@ async function findBestPreEndgameMove(rack, cfg) {
             v = c.m.score - endgameSearch(oppRack, myRack, 0, 1, -Infinity, Infinity, budget);
           } catch (e) {
             if (e !== ENDGAME_ABORT) throw e;
-            state.board = boardSnap; ok = false; break; // solve overran the cap
+            state.board = boardSnap; ok = false; // solve overran the cap
+            if (EG_TT) egRecomputeBoardHash();
+            break;
           }
         }
         ev += v;

@@ -65,13 +65,92 @@ const engines = tests.map(code => {
       state.board = JSON.parse(__B); state.isFirstMove = false; state.bag = new Array(${BAG}).fill('?');
       const rack = JSON.parse(__R).map(t => ({ letter: t.letter, isBlank: t.isBlank }));
       const mv = await findBestMove(rack);
-      return mv && mv.placements ? __moveKey(mv.placements) : 'pass';
+      if (!mv || !mv.placements) return JSON.stringify({ sig: 'pass' });
+      return JSON.stringify({ sig: __moveKey(mv.placements), score: mv.score, placements: mv.placements });
     };`);
   return E;
 });
 
+// On-demand reference solve of an uncovered pick: replicate the
+// builder's construction for a single candidate — enumerate every
+// (opponent rack | bag) split, solve each post-move empty-bag position
+// at the collection's stamped solver shape, average. Returns the value,
+// or 'noempty' (the move cannot empty the bag: unpriceable in this
+// collection's currency) or 'capped' (a split overran the budget).
+let refRealm = null;
+function refValue(meta, bJson, rackStr, poolStr, pick) {
+  if (!meta.solver || !meta.solver.width) return 'legacy';
+  if (!refRealm) {
+    refRealm = m.loadEngine(ENGINE, words, {});
+    refRealm.evalInRealm(`ensureTrie(); ensureLeaveTables();
+      STAGES.bag0.movegenBudget = ${meta.solver.budget};
+      STAGES.bag0.width = ${meta.solver.width};
+      STAGES.bag0.width1 = 0;
+      STAGES.bag0.width2 = 0;
+      STAGES.bag0.depth = ${meta.solver.depth || 0};
+      STAGES.bag0.order = ${meta.solver.order};
+      const BAG = ${meta.bagSize};
+      globalThis.__refValue = function () {
+        state.board = JSON.parse(__B); state.isFirstMove = false; state.bag = new Array(BAG).fill('?');
+        const rack = [...__R].map(ch => ({ letter: ch === '?' ? '' : ch, isBlank: ch === '?' }));
+        const pool = [...__POOL].map(ch => ({ letter: ch === '?' ? '' : ch, isBlank: ch === '?' }));
+        const pick = JSON.parse(__P);
+        const leave = rackWithout(rack, pick.placements);
+        if (leave.length > 0 && Math.min(7 - leave.length, BAG) < BAG) return 'noempty';
+        const subsets = indexSubsets(pool.length, BAG);
+        EG_TT = new Map();
+        egRecomputeBoardHash();
+        const budget = { used: 0 };
+        const boardSnap = state.board.map(r => r.slice());
+        applyToBoard(pick.placements);
+        try {
+          let ev = 0;
+          for (const sub of subsets) {
+            const inBag = new Array(pool.length).fill(false);
+            for (const i of sub) inBag[i] = true;
+            const oppRack = pool.filter((_, k) => !inBag[k]);
+            let v;
+            if (leave.length === 0) {
+              v = pick.score + 2 * rackValueOf(oppRack);
+            } else {
+              const myRack = leave.concat(sub.map(i => pool[i]));
+              budget.used = 0;
+              try {
+                v = pick.score - endgameSearch(oppRack, myRack, 0, 1, -Infinity, Infinity, budget);
+              } catch (e) {
+                if (e !== ENDGAME_ABORT) throw e;
+                state.board = boardSnap;
+                egRecomputeBoardHash();
+                return 'capped';
+              }
+            }
+            ev += v;
+          }
+          return ev / subsets.length;
+        } finally {
+          removeFromBoard(pick.placements);
+          EG_TT = null;
+        }
+      };`);
+  }
+  refRealm._sandbox.__B = bJson;
+  refRealm._sandbox.__R = rackStr;
+  refRealm._sandbox.__POOL = poolStr;
+  refRealm._sandbox.__P = JSON.stringify(pick);
+  return refRealm.evalInRealm('__refValue()');
+}
+
 async function main() {
-  console.log(`Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, solve budget ${coll.meta.budget}, top-${coll.meta.candidates})`);
+  const solver = coll.meta.solver || { budget: coll.meta.budget };
+  console.log(`Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, solver budget ${solver.budget}${solver.width ? `, width ${solver.width}, terminal` : ' (legacy reference)'}, top-${coll.meta.candidates})`);
+  if (coll.meta.egWeightsMd5) {
+    const crypto = require('crypto');
+    const egPath = path.join(__dirname, '..', 'endgame-leaves.json.gz');
+    const cur = fs.existsSync(egPath) ? crypto.createHash('md5').update(fs.readFileSync(egPath)).digest('hex') : 'none';
+    if (cur !== coll.meta.egWeightsMd5) {
+      console.log(`NOTE: endgame leave model differs from the one this collection was solved under (${coll.meta.egWeightsMd5.slice(0, 8)} vs ${cur.slice(0, 8)}).`);
+    }
+  }
   tests.forEach((t, i) => console.log(`  T${i}: ${t}`));
   console.log('');
   console.log(`${'pos'.padStart(7)} ` +
@@ -87,7 +166,10 @@ async function main() {
   };
   const regrets = tests.map(() => []);
   const optimal = tests.map(() => 0);
-  const uncovered = tests.map(() => 0);
+  const uncovered = tests.map(() => 0); // ref-solved on demand
+  const unsolved = tests.map(() => 0); // legacy meta / noempty / capped: excluded
+  const beaten = tests.map(() => 0);
+  const beatenMax = tests.map(() => 0);
   let done = 0;
   const t0 = Date.now();
   let hb = 25, hbAt = 25;
@@ -111,12 +193,18 @@ async function main() {
       engines[i]._sandbox.__B = bJson;
       engines[i]._sandbox.__R = rJson;
       const t = Date.now();
-      const sig = await engines[i].evalInRealm('__pick()');
+      const pick = JSON.parse(await engines[i].evalInRealm('__pick()'));
       const ms = Date.now() - t;
       msCounts[i][ms] = (msCounts[i][ms] || 0) + 1;
       msTotals[i]++;
-      const v = bySig.get(sig);
-      if (v === undefined) { uncovered[i]++; continue; }
+      let v = bySig.get(pick.sig);
+      if (v === undefined) {
+        const rv = pick.placements ? refValue(coll.meta, bJson, e.r, e.p, pick) : 'pass';
+        if (typeof rv !== 'number') { unsolved[i]++; continue; }
+        v = rv;
+        uncovered[i]++;
+        if (v - best > 1e-6) { beaten[i]++; beatenMax[i] = Math.max(beatenMax[i], v - best); }
+      }
       regrets[i].push(best - v);
       if (best - v < 1e-6) optimal[i]++;
     }
@@ -124,7 +212,8 @@ async function main() {
     if (done >= hbAt) { printRow(); hb = Math.min(hb * 1.5, 2000); hbAt = done + hb; }
   }
   printRow();
-  console.log(`\nUncovered choices: ${uncovered.map((u, i) => `T${i}:${u}`).join(' ')}`);
+  console.log(`\nUncovered picks ref-solved: ${uncovered.map((u, i) => `T${i}:${u}`).join(' ')}  (unsolved, excluded: ${unsolved.map((u, i) => `T${i}:${u}`).join(' ')})`);
+  console.log(`Solver beaten (pick > stored best): ${beaten.map((b, i) => `T${i}:${b}${b ? ` (max +${beatenMax[i].toFixed(1)})` : ''}`).join(' ')}`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

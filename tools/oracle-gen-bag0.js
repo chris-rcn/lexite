@@ -16,9 +16,10 @@
 // restart continues after the last completed seed. One JSONL header pins
 // the reference parameters; appending with different parameters refuses.
 //
-//   node tools/oracle-gen-bag0.js <out.jsonl> [seeds] [baseSeed] [M]
-//                                   [budget] [width] [depth]
-//                                   [screenDepth] [screenMargin] [order]
+//   node tools/oracle-gen-bag0.js <out.jsonl> [--seeds N] [--base-seed S]
+//                                 [--top-m M] [--budget B] [--width W]
+//                                 [--depth D] [--screen-depth D]
+//                                 [--screen-margin M] [--order O]
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -26,18 +27,19 @@ const m = require('./match.js');
 
 const OUT = process.argv[2];
 if (!OUT) {
-  console.error('Usage: node tools/oracle-gen-bag0.js <out.jsonl> [seeds] [baseSeed] [M] [budget] [width] [depth] [screenDepth] [screenMargin] [order]');
+  console.error('Usage: node tools/oracle-gen-bag0.js <out.jsonl> [--seeds N] [--base-seed S] [--top-m M] [--budget B] [--width W] [--depth D] [--screen-depth D] [--screen-margin M] [--order O]');
   process.exit(2);
 }
-const SEEDS = parseInt(process.argv[3] || '20000', 10);
-const BASE_SEED = parseInt(process.argv[4] || '905000', 10);
-const M = parseInt(process.argv[5] || '30', 10);
-const BUDGET = parseInt(process.argv[6] || '2000000', 10);
-const WIDTH = parseInt(process.argv[7] || '24', 10);
-const DEPTH = parseInt(process.argv[8] || '100', 10);
-const SCREEN_DEPTH = parseInt(process.argv[9] || '4', 10);
-const SCREEN_MARGIN = parseFloat(process.argv[10] || '5');
-const ORDER = parseInt(process.argv[11] || '1', 10);
+const flag = (f, d) => { const i = process.argv.indexOf(f); return i === -1 ? d : process.argv[i + 1]; };
+const SEEDS = parseInt(flag('--seeds', '20000'), 10);
+const BASE_SEED = parseInt(flag('--base-seed', '905000'), 10);
+const M = parseInt(flag('--top-m', '30'), 10);
+const BUDGET = parseInt(flag('--budget', '2000000'), 10);
+const WIDTH = parseInt(flag('--width', '24'), 10);
+const DEPTH = parseInt(flag('--depth', '100'), 10);
+const SCREEN_DEPTH = parseInt(flag('--screen-depth', '4'), 10);
+const SCREEN_MARGIN = parseFloat(flag('--screen-margin', '5'));
+const ORDER = parseInt(flag('--order', '1'), 10);
 
 const crypto = require('crypto');
 const words = m.loadWords();
