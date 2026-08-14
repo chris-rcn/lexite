@@ -32,8 +32,10 @@ if (!COLL || COLL.startsWith('--')) {
   process.exit(2);
 }
 const tests = [];
+let DETAIL = false;
 for (let i = 3; i < process.argv.length; i++) {
   if (process.argv[i] === '--test') tests.push(process.argv[++i]);
+  else if (process.argv[i] === '--detail') DETAIL = true;
 }
 
 function decodeBoard(s) {
@@ -80,6 +82,7 @@ const engines = tests.map(code => {
 // collection's currency) or 'capped' (a split overran the budget).
 let refRealm = null;
 function refValue(meta, bJson, rackStr, poolStr, pick) {
+  if (meta.oracle === 'policy') return policyValue(meta, bJson, rackStr, poolStr, pick);
   if (!meta.solver || !meta.solver.width) return 'legacy';
   if (!refRealm) {
     refRealm = m.loadEngine(ENGINE, words, {});
@@ -99,7 +102,53 @@ function refValue(meta, bJson, rackStr, poolStr, pick) {
       // v5 collections price non-emptying arms by in-split expectimax
       // recursion instead; REC is null for earlier collections.
       const REC = ${meta.recursion ? JSON.stringify(meta.recursion) : 'null'};
+      // v6 (bag >= 4) collections price non-emptying arms by deterministic
+      // two-ply-defense playouts instead; null for other collections.
+      const DEFP = ${meta.defense ? JSON.stringify(meta.defense) : 'null'};
       const REC_CAP = Symbol('recCap');
+      globalThis.__detValue = async function (bagArr, racks, turn, passes, budget, recState) {
+        state.bag = new Array(bagArr.length).fill('?');
+        if (bagArr.length === 0) {
+          if (++recState.leaves > DEFP.leafCap) throw REC_CAP;
+          budget.used = 0;
+          const v = endgameSearch(racks[turn], racks[1 - turn], passes, 1, -Infinity, Infinity, budget);
+          return turn === 0 ? v : -v;
+        }
+        if (passes >= 2) {
+          const v = rackValueOf(racks[1 - turn]) - rackValueOf(racks[turn]);
+          return turn === 0 ? v : -v;
+        }
+        const cs = await collectTopCandidates(racks[turn], { candidates: DEFP.beam, margin: 0 });
+        if (!cs.length) return await __detValue(bagArr, racks, 1 - turn, passes + 1, budget, recState);
+        let pick = cs[0], bv = -Infinity;
+        for (const c of cs) {
+          applyToBoard(c.m.placements);
+          let rv = 0;
+          try {
+            const resp = await collectTopCandidates(racks[1 - turn], { candidates: 1, margin: 0 });
+            rv = resp.length ? resp[0].val : 0;
+          } finally { removeFromBoard(c.m.placements); }
+          const v2 = c.val - rv;
+          if (v2 > bv) { bv = v2; pick = c; }
+        }
+        const nr = rackWithout(racks[turn], pick.m.placements);
+        const need = Math.min(racks[turn].length - nr.length, bagArr.length);
+        applyToBoard(pick.m.placements);
+        let ev = 0;
+        try {
+          const { sets, total } = __drawSets(bagArr, need);
+          for (const { idx, mult } of sets) {
+            const drawn = idx.map(i => bagArr[i]);
+            const rest = bagArr.filter((_, i2) => !idx.includes(i2));
+            const saveRack = racks[turn];
+            racks[turn] = nr.concat(drawn);
+            try { ev += mult * await __detValue(rest, racks, 1 - turn, 0, budget, recState); }
+            finally { racks[turn] = saveRack; }
+          }
+          ev /= total;
+        } finally { removeFromBoard(pick.m.placements); }
+        return (turn === 0 ? pick.m.score : -pick.m.score) + ev;
+      };
       globalThis.__drawSets = function (arr, n) {
         const subs = indexSubsets(arr.length, n);
         const byKey = new Map();
@@ -197,7 +246,7 @@ function refValue(meta, bJson, rackStr, poolStr, pick) {
         const pick = JSON.parse(__P);
         const leave = rackWithout(rack, pick.placements);
         const emptying = !(leave.length > 0 && Math.min(7 - leave.length, BAG) < BAG);
-        if (!emptying && (BAG <= 2 || (!POLICY && !REC))) return 'noempty';
+        if (!emptying && (BAG <= 2 || (!POLICY && !REC && !DEFP))) return 'noempty';
         const subsets = indexSubsets(pool.length, BAG);
         // Multiset dedup, mirroring build-preend-solves: identical drawn
         // multisets are the same world — solve once, weight by multiplicity.
@@ -214,11 +263,31 @@ function refValue(meta, bJson, rackStr, poolStr, pick) {
         const boardSnap = state.board.map(r => r.slice());
         applyToBoard(pick.placements);
         try {
-          if (!emptying && REC) {
-            // recursion pricing mirroring build-preend-solves v5.
+          if (!emptying && (REC || DEFP)) {
+            // recursion (v5) / deterministic defense-playout (v6) pricing,
+            // mirroring build-preend-solves (same split subsample seed).
+            const priceFn = DEFP ? __detValue : __recValue;
+            let armWorlds = worlds, armN = subsets.length;
+            if (DEFP && DEFP.splitCap) {
+              const rng = seededRng((positionHash(rack) ^ 0xdef5eed) >>> 0);
+              const shuffled = subsets.slice();
+              for (let i = shuffled.length - 1; i > 0; i--) {
+                const j = Math.floor(rng() * (i + 1));
+                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+              }
+              const take = shuffled.slice(0, Math.min(DEFP.splitCap, shuffled.length));
+              const byKey = new Map();
+              for (const sub of take) {
+                const key = sub.map(i => pool[i].isBlank ? '?' : pool[i].letter).sort().join('');
+                const e = byKey.get(key);
+                if (e) e.mult++; else byKey.set(key, { sub, mult: 1 });
+              }
+              armWorlds = [...byKey.values()];
+              armN = take.length;
+            }
             const recState = { leaves: 0 };
             let rev = 0;
-            for (const { sub, mult } of worlds) {
+            for (const { sub, mult } of armWorlds) {
               const inBag = new Array(pool.length).fill(false);
               for (const i of sub) inBag[i] = true;
               const oppRack = pool.filter((_, k) => !inBag[k]);
@@ -231,7 +300,7 @@ function refValue(meta, bJson, rackStr, poolStr, pick) {
                   const drawn = idx.map(i => bagTiles[i]);
                   const rest = bagTiles.filter((_, i2) => !idx.includes(i2));
                   const racks = [leave.concat(drawn), oppRack];
-                  dv += dmult * await __recValue(rest, racks, 1, 0, budget, recState);
+                  dv += dmult * await priceFn(rest, racks, 1, 0, budget, recState);
                 }
                 rev += mult * (pick.score + dv / total);
               } catch (e) {
@@ -242,7 +311,7 @@ function refValue(meta, bJson, rackStr, poolStr, pick) {
               }
             }
             state.bag = new Array(BAG).fill('?');
-            return rev / subsets.length;
+            return rev / armN;
           }
           if (!emptying) {
             // mc pricing mirroring build-preend-solves: CRN seeds per
@@ -317,9 +386,59 @@ function refValue(meta, bJson, rackStr, poolStr, pick) {
   return refRealm.evalInRealm('__refValue()');
 }
 
+// On-demand pricing for v7 all-policy collections: the pick's mean
+// defense-3 playout margin over the SAME position-seeded worlds the
+// builder used — cheap (no solver), so uncovered picks stop being a tax.
+let policyRealm = null;
+function policyValue(meta, bJson, rackStr, poolStr, pick) {
+  if (!policyRealm) {
+    policyRealm = m.loadEngine(ENGINE, words, {});
+    policyRealm.evalInRealm(`ensureTrie(); ensureLeaveTables();
+      const BAG = ${meta.bagSize};
+      const PWORLDS = ${meta.policyConfig.worlds};
+      globalThis.__policyValue = async function () {
+        state.board = JSON.parse(__B); state.isFirstMove = false; state.bag = new Array(BAG).fill('?');
+        const rack = [...__R].map(ch => ({ letter: ch === '?' ? '' : ch, isBlank: ch === '?' }));
+        const pool = [...__POOL].map(ch => ({ letter: ch === '?' ? '' : ch, isBlank: ch === '?' }));
+        const pick = JSON.parse(__P);
+        const oppSize = pool.length - BAG;
+        if (oppSize < 0) return 'skip';
+        const rng = seededRng(positionHash(rack));
+        const worlds = [];
+        for (let w = 0; w < PWORLDS; w++) {
+          const p = pool.slice();
+          for (let i = p.length - 1; i > 0; i--) {
+            const j = Math.floor(rng() * (i + 1));
+            [p[i], p[j]] = [p[j], p[i]];
+          }
+          worlds.push(p);
+        }
+        PLAYOUT_TEMP = ${meta.policyConfig.playoutTemp}; PLAYOUT_DEFENSE = ${meta.policyConfig.playoutDefense};
+        const kept = rackWithout(rack, pick.placements);
+        applyToBoard(pick.placements);
+        let ev = 0;
+        try {
+          for (const world of worlds) ev += await simPlayoutValue(pick.score, kept, world, oppSize, null);
+        } finally {
+          removeFromBoard(pick.placements);
+          PLAYOUT_DEFENSE = 0; PLAYOUT_TEMP = 0;
+          state.bag = new Array(BAG).fill('?');
+        }
+        return ev / worlds.length;
+      };`);
+  }
+  policyRealm._sandbox.__B = bJson;
+  policyRealm._sandbox.__R = rackStr;
+  policyRealm._sandbox.__POOL = poolStr;
+  policyRealm._sandbox.__P = JSON.stringify(pick);
+  return policyRealm.evalInRealm('__policyValue()');
+}
+
 async function main() {
   const solver = coll.meta.solver || { budget: coll.meta.budget };
-  console.log(`Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, solver budget ${solver.budget}${solver.width ? `, width ${solver.width}, terminal` : ' (legacy reference)'}, top-${coll.meta.candidates})`);
+  console.log(coll.meta.oracle === 'policy'
+    ? `Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, all-policy oracle: defense-${coll.meta.policyConfig.playoutDefense} playouts x ${coll.meta.policyConfig.worlds} worlds, top-${coll.meta.candidates})`
+    : `Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, solver budget ${solver.budget}${solver.width ? `, width ${solver.width}, terminal` : ' (legacy reference)'}, top-${coll.meta.candidates})`);
   if (coll.meta.egWeightsMd5) {
     const crypto = require('crypto');
     const egPath = path.join(__dirname, '..', 'endgame-leaves.json.gz');
@@ -331,11 +450,16 @@ async function main() {
   tests.forEach((t, i) => console.log(`  T${i}: ${t}`));
   console.log('');
   console.log(`${'pos'.padStart(7)} ` +
-    tests.map((_, i) => `${('T' + i + ' regret').padStart(10)} ${'SE'.padStart(6)} ${'opt%'.padStart(6)} ${'p99ms'.padStart(6)}`).join(' ') +
+    tests.map((_, i) => `${('T' + i + ' regret').padStart(10)} ${'SE'.padStart(6)} ${'opt%'.padStart(6)} ${'avgMs'.padStart(6)} ${'p99ms'.padStart(6)}`).join(' ') +
     ` ${'elapsed'.padStart(9)}`);
 
   const msCounts = tests.map(() => []);
   const msTotals = tests.map(() => 0);
+  const avgMs = i => {
+    let sum = 0;
+    for (let ms = 0; ms < msCounts[i].length; ms++) sum += ms * (msCounts[i][ms] || 0);
+    return Math.round(sum / msTotals[i]);
+  };
   const p99 = i => {
     let need = Math.ceil(0.99 * msTotals[i]), acc = 0;
     for (let ms = 0; ms < msCounts[i].length; ms++) { acc += msCounts[i][ms] || 0; if (acc >= need) return ms; }
@@ -349,14 +473,15 @@ async function main() {
   const beatenMax = tests.map(() => 0);
   let done = 0;
   const t0 = Date.now();
-  let hb = 25, hbAt = 25;
+  let hbAt = 1; // checkpoint positions grow x1.5: 1, 2, 3, 5, 8, 12, ...
+  let lastPrinted = 0;
   const printRow = () => {
     const cols = tests.map((_, i) => {
       const r = regrets[i];
-      if (!r.length) return `${'—'.padStart(10)} ${'—'.padStart(6)} ${'—'.padStart(6)} ${'—'.padStart(6)}`;
+      if (!r.length) return `${'—'.padStart(10)} ${'—'.padStart(6)} ${'—'.padStart(6)} ${'—'.padStart(6)} ${'—'.padStart(6)}`;
       const mean = r.reduce((a, x) => a + x, 0) / r.length;
       const sd = r.length > 1 ? Math.sqrt(r.reduce((a, x) => a + (x - mean) * (x - mean), 0) / (r.length - 1)) : 0;
-      return `${mean.toFixed(3).padStart(10)} ${(sd / Math.sqrt(r.length)).toFixed(3).padStart(6)} ${(100 * optimal[i] / r.length).toFixed(1).padStart(6)} ${String(p99(i)).padStart(6)}`;
+      return `${mean.toFixed(3).padStart(10)} ${(sd / Math.sqrt(r.length)).toFixed(3).padStart(6)} ${(100 * optimal[i] / r.length).toFixed(1).padStart(6)} ${String(avgMs(i)).padStart(6)} ${String(p99(i)).padStart(6)}`;
     }).join(' ');
     console.log(`${String(done).padStart(7)} ${cols} ${(((Date.now() - t0) / 1000).toFixed(0) + 's').padStart(9)}`);
   };
@@ -374,6 +499,7 @@ async function main() {
       const ms = Date.now() - t;
       msCounts[i][ms] = (msCounts[i][ms] || 0) + 1;
       msTotals[i]++;
+      const coveredPick = e.m.find(a => a.k === pick.sig);
       let v = bySig.get(pick.sig);
       if (v === undefined) {
         const rv = pick.placements ? await refValue(coll.meta, bJson, e.r, e.p, pick) : 'pass';
@@ -385,13 +511,16 @@ async function main() {
       // A ref-solved pick can exceed the stored best (the builder's candidate
       // cut missed it); the baseline was loose, not the play superoptimal —
       // regret floors at 0 (the beaten footer still reports the discovery).
+      if (DETAIL) {
+        console.log(`  # pos ${String(done + 1).padStart(4)} T${i} s=${String(e.s ?? '-').padStart(10)} regret=${Math.max(0, best - v).toFixed(2).padStart(7)} ms=${String(ms).padStart(6)} pick=${pick.sig === 'pass' ? 'pass' : (coveredPick && coveredPick.w) || pick.sig}${bySig.get(pick.sig) === undefined ? ' [uncovered]' : ''}`);
+      }
       regrets[i].push(Math.max(0, best - v));
       if (best - v < 1e-6) optimal[i]++;
     }
     done++;
-    if (done >= hbAt) { printRow(); hb = Math.min(hb * 1.5, 2000); hbAt = done + hb; }
+    if (done >= hbAt) { printRow(); lastPrinted = done; hbAt = Math.ceil(hbAt * 1.5); }
   }
-  printRow();
+  if (done !== lastPrinted) printRow(); // skip a final row that would duplicate the last checkpoint
   console.log(`\nUncovered picks ref-solved: ${uncovered.map((u, i) => `T${i}:${u}`).join(' ')}  (unsolved, excluded: ${unsolved.map((u, i) => `T${i}:${u}`).join(' ')})`);
   console.log(`Solver beaten (pick > stored best): ${beaten.map((b, i) => `T${i}:${b}${b ? ` (max +${beatenMax[i].toFixed(1)})` : ''}`).join(' ')}`);
 }

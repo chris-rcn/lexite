@@ -17,10 +17,14 @@
 // A candidate that would not empty the bag (plays too few tiles to draw the
 // whole bag down to zero) can't be scored by the bag-0 search directly. At
 // bag <= 2 such a position is dropped (the set is biased toward positions
-// whose top moves reach the endgame — accepted). At bag >= 3 the arm is
+// whose top moves reach the endgame — accepted). At bag == 3 the arm is
 // priced by in-split expectimax recursion (beam-or-pass best replies,
 // enumerated deduped draws, reference endgame solve at the empty-bag
-// frontier) and marked rec:1 in the stored arms.
+// frontier), marked rec:1. At bag >= 4 recursion is unaffordable and the
+// arm is priced by deterministic two-ply-defense playouts (argmax of
+// static value minus the responder's best static answer, draws
+// enumerated), marked def:1 — measured +3.9 optimistic vs recursion at
+// bag3, the accepted referee bias where no exact alternative fits.
 //
 //   node tools/build-preend-solves.js <out.json> [--seeds N] [--base-seed S]
 //                                      [--candidates K] [--budget B]
@@ -47,6 +51,16 @@ const BAG = parseInt(flag('--bag-size', '2'), 10);
 // the meta along with the endgame-leave-model hash; appending refuses on
 // any mismatch.
 const WIDTH = parseInt(flag('--width', '12'), 10);
+// --oracle policy: the all-policy oracle (META v7). Every arm — emptying
+// and banking alike — is priced as its mean margin over shared sampled
+// worlds played to the END OF THE GAME by the information-legal defense-3
+// playout policy (two-ply only at bag 0, where racks are public; one-ply
+// own-information replies while the bag holds tiles). One currency, no
+// clairvoyance, no solver anchor, no drops. Chosen for bag >= 4 after the
+// engine measurement showed information-legality costs ~nothing (0.333 vs
+// 0.322 vs the frontier-anchored judge at bag3).
+const ORACLE = flag('--oracle', '');
+const PWORLDS = parseInt(flag('--worlds', '300'), 10);
 // Half-width of the per-world aspiration window (points). Not part of the
 // referee shape: accepted values equal full-window search values.
 const ASPIRATION = 16;
@@ -59,6 +73,20 @@ const ASPIRATION = 16;
 // +3.9 (two-ply defense) points vs this recursion. An arm exceeding
 // `leafCap` reference solves marks the position capped.
 const REC = { beam: 5, leafCap: 8000 };
+// bag >= 4 banking arms: recursion is unaffordable (the reply beam
+// multiplies through four draw levels), so they are priced by
+// DETERMINISTIC two-ply-defense playouts — each in-split continuation
+// move is the argmax of (static value - responder's best static value),
+// draws enumerated and deduped (chance nodes only), reference endgame
+// solve at the empty-bag frontier. The policy measured 0.64 regret vs
+// the bag3 recursion referee as an engine (77% optimal); its bias as an
+// arm-pricing currency was +3.9 +- 1.1 at bag3 (validate-mc-pricing.js)
+// — accepted at bag >= 4 where no exact alternative fits.
+// splitCap: def-arm split-sampling budget. Splits beyond ~120 polish the
+// value below the policy's own ~+4 bias floor; a seeded shuffle of the raw
+// index subsets keeps the subsample uniform (unbiased mean). Emptying arms
+// always use full enumeration — their per-split values are exact.
+const DEF = { beam: 8, leafCap: 8000, splitCap: 100 };
 const crypto = require('crypto');
 const EG_PATH = path.join(__dirname, '..', 'endgame-leaves.json.gz');
 const egWeightsMd5 = fs.existsSync(EG_PATH)
@@ -140,6 +168,89 @@ Q.evalInRealm(`
     }
     return best;
   };
+  const DEF_BEAM = ${DEF.beam};
+  // Deterministic two-ply-defense continuation from the ROOT MOVER's
+  // perspective: racks[0] is the root mover, turn is to move. One line per
+  // draw branch — branching only at chance (draw) nodes.
+  globalThis.__detValue = async function (bagArr, racks, turn, passes, budget, recState) {
+    state.bag = new Array(bagArr.length).fill('?');
+    if (bagArr.length === 0) {
+      if (++recState.leaves > ${DEF.leafCap}) throw REC_CAP;
+      budget.used = 0;
+      const v = endgameSearch(racks[turn], racks[1 - turn], passes, 1, -Infinity, Infinity, budget);
+      return turn === 0 ? v : -v;
+    }
+    if (passes >= 2) {
+      const v = rackValueOf(racks[1 - turn]) - rackValueOf(racks[turn]);
+      return turn === 0 ? v : -v;
+    }
+    const cs = await collectTopCandidates(racks[turn], { candidates: DEF_BEAM, margin: 0 });
+    if (!cs.length) return await __detValue(bagArr, racks, 1 - turn, passes + 1, budget, recState);
+    let pick = cs[0], bv = -Infinity;
+    for (const c of cs) {
+      applyToBoard(c.m.placements);
+      let rv = 0;
+      try {
+        const resp = await collectTopCandidates(racks[1 - turn], { candidates: 1, margin: 0 });
+        rv = resp.length ? resp[0].val : 0;
+      } finally { removeFromBoard(c.m.placements); }
+      const v2 = c.val - rv;
+      if (v2 > bv) { bv = v2; pick = c; }
+    }
+    const nr = rackWithout(racks[turn], pick.m.placements);
+    const need = Math.min(racks[turn].length - nr.length, bagArr.length);
+    applyToBoard(pick.m.placements);
+    let ev = 0;
+    try {
+      const { sets, total } = __drawSets(bagArr, need);
+      for (const { idx, mult } of sets) {
+        const drawn = idx.map(i => bagArr[i]);
+        const rest = bagArr.filter((_, i2) => !idx.includes(i2));
+        const saveRack = racks[turn];
+        racks[turn] = nr.concat(drawn);
+        try { ev += mult * await __detValue(rest, racks, 1 - turn, 0, budget, recState); }
+        finally { racks[turn] = saveRack; }
+      }
+      ev /= total;
+    } finally { removeFromBoard(pick.m.placements); }
+    return (turn === 0 ? pick.m.score : -pick.m.score) + ev;
+  };
+  globalThis.__policySolve = async function (boardJson, rackJson) {
+    state.board = JSON.parse(boardJson); state.isFirstMove = false; state.bag = new Array(BAG).fill('?');
+    const rack = JSON.parse(rackJson).map(t => ({ letter: t.letter, isBlank: t.isBlank }));
+    const pool = deriveOpponentRack(rack);
+    const oppSize = pool.length - BAG;
+    if (oppSize < 0 || pool.length < BAG) return JSON.stringify({ skip: 1 });
+    const cands = await collectTopCandidates(rack, { candidates: ${K}, margin: 0 });
+    if (cands.length < 2) return JSON.stringify({ skip: 1 });
+    // Shared sampled worlds, seeded by the position (identical in the
+    // eval's on-demand pricing): first oppSize tiles are the opponent
+    // rack, the rest the bag draw order.
+    const rng = seededRng(positionHash(rack));
+    const worlds = [];
+    for (let w = 0; w < ${PWORLDS}; w++) {
+      const p = pool.slice();
+      for (let i = p.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [p[i], p[j]] = [p[j], p[i]];
+      }
+      worlds.push(p);
+    }
+    PLAYOUT_TEMP = 0; PLAYOUT_DEFENSE = 3;
+    const results = [];
+    try {
+      for (const c of cands) {
+        const kept = rackWithout(rack, c.m.placements);
+        applyToBoard(c.m.placements);
+        let ev = 0;
+        try {
+          for (const world of worlds) ev += await simPlayoutValue(c.m.score, kept, world, oppSize, null);
+        } finally { removeFromBoard(c.m.placements); }
+        results.push({ k: __moveKey(c.m.placements), w: c.m.word, sc: c.m.score, sv: +c.val.toFixed(1), ex: +(ev / worlds.length).toFixed(2) });
+      }
+    } finally { PLAYOUT_DEFENSE = 0; state.bag = new Array(BAG).fill('?'); }
+    return JSON.stringify({ pool: pool.map(t => t.isBlank ? '?' : t.letter.toUpperCase()).join(''), results, allSolved: true, reason: null });
+  };
   globalThis.__refSolve = async function (boardJson, rackJson) {
     state.board = JSON.parse(boardJson); state.isFirstMove = false; state.bag = new Array(BAG).fill('?');
     const rack = JSON.parse(rackJson).map(t => ({ letter: t.letter, isBlank: t.isBlank }));
@@ -160,6 +271,26 @@ Q.evalInRealm(`
       if (e) e.mult++; else byDraw.set(key, { sub, mult: 1 });
     }
     const worlds = [...byDraw.values()];
+    // def-arm split subsample (bag >= 4): uniform without replacement via
+    // seeded shuffle of the raw index subsets, deduped within the sample.
+    let defWorlds = null, defWgt = 0;
+    if (BAG >= 4) {
+      const rng = seededRng((positionHash(rack) ^ 0xdef5eed) >>> 0);
+      const shuffled = subsets.slice();
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      const take = shuffled.slice(0, Math.min(${DEF.splitCap}, shuffled.length));
+      const byKey = new Map();
+      for (const sub of take) {
+        const key = sub.map(i => pool[i].isBlank ? '?' : pool[i].letter).sort().join('');
+        const e = byKey.get(key);
+        if (e) e.mult++; else byKey.set(key, { sub, mult: 1 });
+      }
+      defWorlds = [...byKey.values()];
+      defWgt = 1 / take.length;
+    }
     const savedB = STAGES.bag0.movegenBudget; STAGES.bag0.movegenBudget = ${BUDGET};
     // Per-position transposition table (worlds share candidate boards);
     // the hash is recomputed here and again after any abort restore.
@@ -180,8 +311,11 @@ Q.evalInRealm(`
         applyToBoard(c.m.placements);
         let ev = 0, ok = true;
         if (!emptying) {
+          const priceFn = BAG >= 4 ? __detValue : __recValue;
+          const armWorlds = BAG >= 4 ? defWorlds : worlds;
+          const armWgt = BAG >= 4 ? defWgt : wgt;
           const recState = { leaves: 0 };
-          for (const { sub, mult } of worlds) {
+          for (const { sub, mult } of armWorlds) {
             const inBag = new Array(pool.length).fill(false);
             for (const i of sub) inBag[i] = true;
             const oppRack = pool.filter((_, k) => !inBag[k]);
@@ -194,7 +328,7 @@ Q.evalInRealm(`
                 const drawn = idx.map(i => bagTiles[i]);
                 const rest = bagTiles.filter((_, i2) => !idx.includes(i2));
                 const racks = [leave.concat(drawn), oppRack];
-                dv += dmult * await __recValue(rest, racks, 1, 0, budget, recState);
+                dv += dmult * await priceFn(rest, racks, 1, 0, budget, recState);
               }
               ev += mult * (c.m.score + dv / total);
             } catch (e) {
@@ -205,7 +339,9 @@ Q.evalInRealm(`
           state.bag = new Array(BAG).fill('?');
           removeFromBoard(c.m.placements);
           if (!ok) { allSolved = false; break; }
-          results.push({ k: __moveKey(c.m.placements), w: c.m.word, sc: c.m.score, sv: +c.val.toFixed(1), ex: +(ev * wgt).toFixed(2), rec: 1 });
+          results.push(Object.assign(
+            { k: __moveKey(c.m.placements), w: c.m.word, sc: c.m.score, sv: +c.val.toFixed(1), ex: +(ev * armWgt).toFixed(2) },
+            BAG >= 4 ? { def: 1 } : { rec: 1 }));
           continue;
         }
         // Aspiration: adjacent worlds of one candidate correlate strongly, so
@@ -250,15 +386,29 @@ Q.evalInRealm(`
   };
 `);
 
-const META = {
-  v: 5, // v5: bag>=3 non-emptying arms priced by in-split expectimax
-        // recursion (rec:1) — policy playouts measured +4..+11 optimistic
-        // (v4 mc pricing) and retired. v4: endgameSearch window fix.
+const META = ORACLE === 'policy' ? {
+  v: 7, // v7: all-policy oracle — every arm priced by information-legal
+        // defense-3 playouts to the game end over shared sampled worlds;
+        // no solver, no clairvoyance, no drops, one currency.
+  oracle: 'policy',
+  bagSize: BAG, candidates: K, baseSeed: BASE_SEED,
+  seedMode: 'stream',
+  candidateOrder: 'blend',
+  policyConfig: { worlds: PWORLDS, playoutDefense: 3, playoutTemp: 0 },
+  egWeightsMd5,
+} : {
+  // v5: bag==3 non-emptying arms priced by in-split expectimax recursion
+  // (rec:1) — policy playouts measured +4..+11 optimistic (v4 mc pricing)
+  // and retired. v4: endgameSearch window fix. v6 (bag>=4 files only):
+  // non-emptying arms priced by deterministic two-ply-defense playouts
+  // (def:1) — recursion unaffordable at four draw levels. The version is
+  // per-file so bag<=3 collections stay append-compatible with v5.
+  v: BAG >= 4 ? 6 : 5,
   bagSize: BAG, candidates: K, baseSeed: BASE_SEED,
   seedMode: 'stream', // game seeds drawn from mulberry32(baseSeed), stored per entry
   candidateOrder: 'blend',
   solver: { budget: BUDGET, width: WIDTH, depth: 0, order: 1, tt: 1 },
-  recursion: REC,
+  ...(BAG >= 4 ? { defense: DEF } : { recursion: REC }),
   egWeightsMd5,
 };
 let coll = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, 'utf8'))
@@ -294,7 +444,7 @@ function save() { fs.writeFileSync(OUT + '.tmp', JSON.stringify(coll)); fs.renam
     Q._sandbox.__B = JSON.stringify(snap.board);
     Q._sandbox.__R = JSON.stringify(snap.rack);
     const tSolve = Date.now();
-    const r = JSON.parse(await Q.evalInRealm('__refSolve(__B, __R)'));
+    const r = JSON.parse(await Q.evalInRealm(ORACLE === 'policy' ? '__policySolve(__B, __R)' : '__refSolve(__B, __R)'));
     if (!r.skip) { solveMs += Date.now() - tSolve; solveN++; }
     if (r.skip) skipped++;
     else if (!r.allSolved) { if (r.reason === 'capped') capped++; else dropped++; }

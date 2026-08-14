@@ -1846,7 +1846,11 @@ const SIM_BASE = {
   // rescans only when an out threat exists, so blocking moves get caught at
   // near-one-ply cost (replies that CREATE a fresh out are not detected).
   // 2 = full two-ply (every reply priced by the responder's best answer,
-  // ~8 scans per ply). Composes with playoutTemp: temp 0 plays the argmax,
+  // ~8 scans per ply). 3 = full two-ply ONLY at bag 0 — the
+  // information-legal variant: empty-bag racks are public via tile
+  // tracking, so the two-ply defense there uses no knowledge a real
+  // player lacks, while bag>0 plies stay one-ply greedy on own-rack
+  // information. Composes with playoutTemp: temp 0 plays the argmax,
   // temp > 0 samples over the adjusted values.
   playoutDefense: 0,
   candidates: 5,    // max static candidates (top-K) evaluated by simulation
@@ -1857,9 +1861,29 @@ const SIM_BASE = {
   // a simulation could genuinely overrule the static best into sat 10 back.
   margin: 10,
   samples: 30,      // sampled worlds, shared across candidates
+  // Challenger-budget allocator. 0 (default) = successive rejection:
+  // world-major evaluation with permanent retirement once a challenger is
+  // confidently worse (minWorlds/pruneEvery below tune it). 'halving' =
+  // sequential halving: the decision budget (meter units, or worlds when
+  // unmetered) splits into ceil(log2(challengers)) equal rounds; all
+  // survivors share every world (paired), and at each round boundary the
+  // bottom half by paired mean vs the incumbent retires. No per-bag
+  // retirement tuning, and the candidate count self-regulates — admit a
+  // generous beam and the rounds starve the losers. The incumbent is
+  // never retired (the final overrule gate needs it). 'ucb' = prior-gated
+  // paired UCB (terminal stages only): every arm carries a posterior on
+  // its gap vs the incumbent seeded by the static prior (priorSd); only
+  // arms whose posterior P(better) stays above 1-overruleP get worlds,
+  // scheduled most-promising-first on shared world prefixes, incumbent
+  // kept lazily in step. Admission is free (an arm far behind on statics
+  // never gets evaluated), so no candidate count needs tuning — admit a
+  // wide beam with margin 0.
+  alloc: 0,
   minWorlds: 6,     // worlds evaluated before pruning may trigger
   pruneEvery: 2,    // prune check cadence (in worlds) after the minimum
   // movegenBudget (terminal stages): work meter for a decision, counted
+  // in generated moves plus a 300-unit surcharge per blank in the mover's
+  // rack per ply (blank scans do ~26x the work per generated move);
   // in GENERATED MOVES (plus ~10/ply scan overhead) — the unit tracks
   // actual scan cost, unlike plies, whose cost spans 40x with board
   // openness. Roughly 30-40 units/ms; ~30k = 1s. 0 = unmetered. On
@@ -1915,16 +1939,17 @@ const STAGES = {
   // (opponent rack | bag) worlds, so enumerate them all exactly rather
   // than sample; candidates are cut by the draw-aware endgame-model
   // ordering (egMidBlend 0: the midgame model measured no remaining
-  // value at bag 1), evaluated by endgame-aware playouts, with early
-  // pairwise retirement (minWorlds 3 / pruneEvery 1) funding 10-wide
-  // root coverage at the 6-wide cost. Against the v3 reference-solve
-  // benchmark (width-12 terminal referee): regret 1.93/decision at ~64%
+  // value at bag 1), evaluated by endgame-aware playouts, with the
+  // challenger budget allocated by sequential halving funding 10-wide
+  // root coverage at narrow cost (halving beat the campaign-tuned
+  // minWorlds-3 retirement 1.82 vs 1.93 on the v3 judge). Against that
+  // benchmark (width-12 terminal referee): regret 1.82/decision at ~65%
   // optimal, p99 ~0.9s, vs 2.71 / 58% for the pre-campaign stage on the
   // same judge. Prior-shrinkage selection (bayes) measured strictly
   // harmful here: enumerated playout means are exact averages of biased
   // per-world values, and the across-world spread the posterior reads as
   // noise is genuine bag variance.
-  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 10, margin: 0, minWorlds: 3, pruneEvery: 1, scoreAware: 0, egMidBlend: 0 },
+  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 10, margin: 0, alloc: 'halving', scoreAware: 0, egMidBlend: 0 },
   // bag2: the unseen pool splits into C(9,2)=36 worlds — enumerated
   // exactly (samples 100 is only the enumeration-arming ceiling; it must
   // stay >= 36). The world list is seeded-shuffled at build so the
@@ -1934,34 +1959,36 @@ const STAGES = {
   // meter for survivors' worlds. Bayes off: as at bag1, enumerated
   // across-world spread is genuine bag variance, not noise — shrinkage
   // measured 0.4 worse (sampled worlds are the regime where it helps).
-  // Config found by constrained search on the v3 reference-solve benchmark
-  // (229 positions, p99 <= 1100ms required): regret 1.27/decision at 66%
-  // optimal, p99 ~1040ms (sampled-mode best on the same judge: 1.57).
-  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, samples: 100, candidates: 9, margin: 0, minWorlds: 5, pruneEvery: 1, egMidBlend: 0.18, movegenBudget: 110000, scoreAware: 0 },
+  // Challenger budget allocated by sequential halving (parameter-free;
+  // beat the campaign-tuned minWorlds-5 retirement 1.25 vs 1.27 on the
+  // v3 benchmark, p99 ~1000ms).
+  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, samples: 100, candidates: 9, margin: 0, alloc: 'halving', egMidBlend: 0.18, movegenBudget: 110000, scoreAware: 0 },
   // bag3: the unseen pool splits into C(10,3)=120 worlds — too many to
   // enumerate usefully under the meter (enumeration measured worse than
   // sampling here, with or without bayes). Sampled worlds + weak Bayes
   // shrinkage (the sampled regime is where the prior helps; cf. bag1/2),
-  // movegenBudget meter with DEEP metered retirement: minWorlds 11 is the
-  // star knob — at this budget the meter's whole value is funding
-  // survivors' worlds, and raw budget without deeper retirement measures
-  // flat. playoutDefense/playoutTemp measured worse under the meter
-  // (reply quality trades against world count and loses). Config found by
-  // constrained search on the v5 reference-solve benchmark (385 positions,
-  // recursion-priced banking arms, p99 <= 1100ms required): regret
-  // 1.33/decision at 68% optimal (pre-campaign config 2.27, static 3.51),
-  // p99 ~1005ms under 4-wide eval contention, ~700-850 solo.
-  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 8, margin: 0, minWorlds: 11, pruneEvery: 1, bayes: 1, overruleP: 0.62, priorSd: 9, movegenBudget: 95000, scoreAware: 0 },
-  // bag4: C(11,4)=330 worlds. With the ~1s budget stretched this thin, world
-  // coverage — not candidate count — is the bottleneck, so the budget-optimal
-  // split is FEWER candidates and MORE worlds: sample 10 worlds over only 4
-  // candidates (the best move almost always sits in the top 4 here). Scored
-  // against a 60-world greedy-sample oracle (bag=4 is too deep to enumerate all
-  // 330) over 202 positions: the noisy absolute regret is 3.63 (static 5.52),
-  // but the trustworthy paired gap is +1.89 pts of picked-move value vs static
-  // at p99 ~900ms. C=6/S=6 recovers only +1.13 at the same budget; C=4/S=10 is
-  // the frontier optimum (C=3 starts missing rank-4 best moves).
-  bag4: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, scoreAware: 0 },
+  // movegenBudget meter with challenger budget allocated by sequential
+  // halving — parameter-free, and it beat the campaign-tuned minWorlds-11
+  // retirement (1.25 vs 1.33 on the v5 385-position benchmark; the tuned
+  // retirement depth had been the campaign's star knob, which is exactly
+  // the tuning surface halving deletes). playoutDefense/playoutTemp
+  // measured worse under the meter (reply quality trades against world
+  // count and loses). Pre-campaign config 2.27, static 3.51; p99 ~1s.
+  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 8, margin: 0, alloc: 'halving', bayes: 1, overruleP: 0.62, priorSd: 9, movegenBudget: 95000, scoreAware: 0 },
+  // bag4: C(11,4)=330 worlds — sampled under the movegenBudget meter
+  // (which carries the per-blank surcharge this stage forced: bag4's
+  // blank-heavy pools ran 17s decisions before generated-move charging
+  // was made work-proportional). Challenger budget by sequential halving;
+  // bayes OFF — the first sampled stage where prior shrinkage measured
+  // harmful even at wide priorSd (the bag3 law inverts). egMidBlend 0.6:
+  // the first stage where the midgame leave dominates the mix (the
+  // endgame is four draws away). Greedy playouts (defense/temp negative
+  // under the meter, fourth campaign running). Scored against the v7
+  // all-policy oracle (information-legal defense-3 playouts x 300
+  // worlds, 333 positions, p99 <= 1100ms required): regret
+  // 2.62/decision at 55% optimal, p99 ~1000ms (pre-campaign config
+  // 4.62 / 47%; static 7.70 / 38%).
+  bag4: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 7, margin: 0, alloc: 'halving', bayes: 0, egMidBlend: 0.6, movegenBudget: 70000, scoreAware: 0 },
   // bag5: C(12,5)=792 worlds. Same starved-budget regime as bag4 — reuse the
   // 10-world / 4-candidate split (regret 4.30 vs a 100-world greedy-sample
   // oracle over 224 positions, paired gap +1.16 pts vs static, p99 ~830ms). The
@@ -2895,7 +2922,7 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, meter) {
       if (rng || defense) {
         const cs = await collectTopCandidates(mover, { candidates: 8, margin: 0 });
         gen = EG_SCAN_MOVE_COUNT;
-        if (cs.length && PLAYOUT_DEFENSE >= 2) {
+        if (cs.length && PLAYOUT_DEFENSE === 2) {
           const other2 = side === 1 ? myRack : oppRack;
           for (const c of cs) {
             applyToBoard(c.m.placements);
@@ -2918,7 +2945,17 @@ async function simPlayoutValue(moveScore, myKeptTiles, world, oppSize, meter) {
         gen = EG_SCAN_MOVE_COUNT;
       }
     }
-    if (meter) meter.used += 10 + gen; // 10 ~ fixed per-scan overhead
+    if (meter) {
+      // 10 ~ fixed per-scan overhead. Blank surcharge: the meter's unit is
+      // GENERATED moves, but a blank multiplies scan WORK ~26x per anchor
+      // while often generating few extra moves — double-blank racks
+      // measured ~5 units/ms against the ~30-80 calibration (a 17s
+      // decision under a 95k meter). 300 units per mover blank per ply
+      // restores work-proportional charging on exactly those racks.
+      let bl = 0;
+      for (const t of mover) if (t.isBlank) bl++;
+      meter.used += 10 + gen + 300 * bl;
+    }
     if (!mv) {
       // True pass: no move and no exchange possible. Board and rack are
       // unchanged, so two in a row is a genuine deadlock (the real game's
@@ -3138,16 +3175,38 @@ async function findBestSimMove(rack, cfg) {
   // count would exceed cfg.samples (nothing gained by enumerating then).
   const worlds = [];
   const splitCount = enumChoose(pool.length, realBag.length);
-  if (cfg.enumerate && splitCount > 0 && splitCount <= cfg.samples) {
+  // A world has TWO chance stages: which pool tiles are in the bag (the
+  // split), and the order they come out (the draw). At bag >= 3 each
+  // split expands into every permutation of its bag tiles, all equally
+  // likely, so the world list is exactly uniform over (split, draw
+  // order); repeated permutations of duplicate letters are kept —
+  // equal-weight replication is what keeps the uniform average correct
+  // without weighting machinery. (One pool-order draw per split is exact
+  // over splits but a deterministic, biased sample of draws; sampling
+  // beat that form at bag3.) At bag <= 2 the expansion is NOT applied:
+  // most plays there consume the whole bag, so order-duplicates would
+  // halve the metered prefix's split coverage — measured 1.81 vs 1.27
+  // on the bag2 benchmark. Single pool-order worlds, as always.
+  const permCount = realBag.length >= 3 ? ([6, 24][realBag.length - 3] || 0) : 1;
+  if (cfg.enumerate && splitCount > 0 && permCount > 0 && splitCount * permCount <= cfg.samples) {
+    const perms = tiles => {
+      if (tiles.length <= 1) return [tiles];
+      const out = [];
+      for (let i = 0; i < tiles.length; i++) {
+        for (const rest of perms(tiles.slice(0, i).concat(tiles.slice(i + 1)))) out.push([tiles[i]].concat(rest));
+      }
+      return out;
+    };
     for (const bagIdx of indexSubsets(pool.length, realBag.length)) {
       const inBag = new Array(pool.length).fill(false);
       for (const k of bagIdx) inBag[k] = true;
       const opp = [], bagTiles = [];
       for (let k = 0; k < pool.length; k++) (inBag[k] ? bagTiles : opp).push(pool[k]);
-      worlds.push(opp.concat(bagTiles)); // opponent rack, then bag draw order
+      if (permCount === 1) worlds.push(opp.concat(bagTiles)); // opponent rack, then bag draw order
+      else for (const order of perms(bagTiles)) worlds.push(opp.concat(order));
     }
-    // Shuffle: indexSubsets yields splits in a deterministic combinatorial
-    // order, so a meter cutoff over a prefix would be a biased subset of
+    // Shuffle: enumeration yields worlds in a deterministic combinatorial
+    // order, so a meter or retirement prefix would be a biased subset of
     // worlds. A seeded shuffle makes any prefix exchangeable.
     const rng = seededRng(positionHash(rack));
     for (let i = worlds.length - 1; i > 0; i--) {
@@ -3226,9 +3285,70 @@ async function findBestSimMove(rack, cfg) {
   const myScoreMargin = state.computerScore - state.playerScore;
   const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
+  // Sequential halving schedule: cut points across the decision budget.
+  const halving = cfg.alloc === 'halving';
+  let roundCuts = null, roundIdx = 0;
+  if (halving) {
+    const rounds = Math.max(1, Math.ceil(Math.log2(Math.max(2, K - 1))));
+    roundCuts = [];
+    for (let r = 1; r < rounds; r++) {
+      roundCuts.push(cfg.movegenBudget > 0 ? cfg.movegenBudget * r / rounds : M * r / rounds);
+    }
+  }
   // Terminal-stage meter (see SIM_BASE.movegenBudget).
   const meter = { used: 0 };
   try {
+    if (cfg.alloc === 'ucb' && toTerminal) {
+      // Prior-gated paired UCB (see SIM_BASE.alloc). Posterior on the true
+      // gap of arm ci vs the incumbent: prior N(staticGap, priorSd^2),
+      // conjugate-updated with the paired diffs over ci's world prefix.
+      const post = ci => {
+        const n = vals[ci].length;
+        const mu0 = arms[ci].staticVal - arms[0].staticVal;
+        if (n === 0) return { p: normalCdf(mu0 / cfg.priorSd), n, mean: mu0, sd: cfg.priorSd };
+        const priorPrec = 1 / (cfg.priorSd * cfg.priorSd);
+        let sum = 0;
+        for (let w = 0; w < n; w++) sum += vals[ci][w] - vals[0][w];
+        const mbar = sum / n;
+        let ss = 0;
+        for (let w = 0; w < n; w++) { const d = vals[ci][w] - vals[0][w] - mbar; ss += d * d; }
+        const s2 = Math.max(n > 1 ? ss / (n - 1) : cfg.varFloor, cfg.varFloor);
+        const postVar = 1 / (priorPrec + n / s2);
+        const postMean = postVar * (mu0 * priorPrec + (n / s2) * mbar);
+        return { p: normalCdf(postMean / Math.sqrt(postVar)), n, mean: postMean, sd: Math.sqrt(postVar) };
+      };
+      const evalArm = async (ci, w) => {
+        const arm = arms[ci];
+        if (arm.placements) applyToBoard(arm.placements);
+        const margin = await simPlayoutValue(arm.score, arm.kept, worlds[w], oppSize, meter);
+        if (arm.placements) removeFromBoard(arm.placements);
+        vals[ci].push(scoreAware ? normalCdf((myScoreMargin + margin) / sigmaAtBag(realBag.length)) : margin);
+      };
+      while (true) {
+        if (cfg.movegenBudget > 0 && meter.used >= cfg.movegenBudget) break;
+        // Schedule by OPTIMISM (posterior upper bound), not by P(better):
+        // an arm deep behind on statics has a low prior mean but a wide
+        // posterior — its upper bound competes, so it earns worlds. Close
+        // an arm only on evidence (>= 2 worlds), never on the prior alone.
+        let best = -1, bestIdx = -Infinity;
+        for (let ci = 1; ci < K; ci++) {
+          if (!alive[ci]) continue;
+          const { n, mean, sd } = post(ci);
+          const idx = mean + 2 * sd;
+          // Close only when the optimistic bound itself is dominated —
+          // the same currency the scheduler ranks by. (Closing on the
+          // posterior P(better) re-derives prior-closing at small n:
+          // low-variance evidence can't move a deep prior in 2 worlds.)
+          if (n >= 2 && idx < 0) { alive[ci] = false; continue; }
+          if (n >= M) continue; // world stream exhausted for this arm
+          if (idx > bestIdx) { bestIdx = idx; best = ci; }
+        }
+        if (best === -1) break;
+        const w = vals[best].length;
+        if (vals[0].length <= w) await evalArm(0, w); // incumbent keeps pace lazily
+        await evalArm(best, w);
+      }
+    } else
     // World-major so surviving candidates advance together and pruning
     // can retire hopeless challengers early; the meter cuts at candidate
     // boundaries with whole-world rollback so every candidate is judged
@@ -3319,10 +3439,26 @@ async function findBestSimMove(rack, cfg) {
         for (let ci = 0; ci < K; ci++) vals[ci].length = preLens[ci];
         break;
       }
+      const n = w + 1;
+      if (halving) {
+        // Cross any round boundaries reached this world (the meter can jump
+        // past several) and halve the surviving challengers at each.
+        const progress = cfg.movegenBudget > 0 ? meter.used : n;
+        while (roundIdx < roundCuts.length && progress >= roundCuts[roundIdx]) {
+          roundIdx++;
+          const ranked = [];
+          for (let ci = 1; ci < K; ci++) {
+            if (alive[ci]) ranked.push([pairedStats(vals, ci, 0, n)[0], ci]);
+          }
+          if (ranked.length <= 1) continue;
+          ranked.sort((a, b) => b[0] - a[0]);
+          for (let r = Math.ceil(ranked.length / 2); r < ranked.length; r++) alive[ranked[r][1]] = false;
+        }
+        continue;
+      }
       // Prune challengers that are confidently worse than the incumbent —
       // they can never win the final overrule gate, so stop paying for
       // their reply searches. The incumbent (candidate 0) is never pruned.
-      const n = w + 1;
       if (n >= cfg.minWorlds && n < M && (n - cfg.minWorlds) % cfg.pruneEvery === 0) {
         for (let ci = 1; ci < K; ci++) {
           if (!alive[ci]) continue;
@@ -3343,6 +3479,8 @@ async function findBestSimMove(rack, cfg) {
     PLAYOUT_TEMP = 0;
     PLAYOUT_DEFENSE = 0;
     state.bag = realBag;
+    TRACE.lastMeterUsed = meter.used; // decision telemetry (cheap, always set)
+    TRACE.lastWorldsDone = vals[0].length;
   }
 
   // The static choice (candidate 0) stays unless a surviving challenger
@@ -3361,10 +3499,17 @@ async function findBestSimMove(rack, cfg) {
   let bestIdx = 0;
   for (let ci = 1; ci < K; ci++) {
     if (!alive[ci]) continue;
+    // Pair over the shared world prefix. Classic allocators evaluate every
+    // arm on every completed world (nPair == NW); under 'ucb' challengers
+    // hold prefixes of varying length, and an arm the scheduler never
+    // funded has no evidence at all — the static prior alone cannot
+    // overrule, so it is skipped.
+    const nPair = Math.min(vals[ci].length, vals[bestIdx].length);
+    if (nPair === 0) continue;
     if (cfg.bayes) {
-      if (bayesProb(vals, ci, bestIdx, NW) > cfg.overruleP) bestIdx = ci;
+      if (bayesProb(vals, ci, bestIdx, nPair) > cfg.overruleP) bestIdx = ci;
     } else {
-      const [mean] = pairedStats(vals, ci, bestIdx, NW);
+      const [mean] = pairedStats(vals, ci, bestIdx, nPair);
       if (mean > 0) bestIdx = ci;
     }
   }
@@ -3382,7 +3527,7 @@ async function findBestSimMove(rack, cfg) {
     TRACE.lastNArms = K;
     TRACE.lastGap = override ? arms[0].staticVal - arms[bestIdx].staticVal : 0;
     if (override) {
-      const [mean, se] = pairedStats(vals, bestIdx, 0, NW);
+      const [mean, se] = pairedStats(vals, bestIdx, 0, Math.min(vals[bestIdx].length, NW));
       TRACE.lastZ = se > 0 ? mean / se : (mean > 0 ? 1e9 : 0);
       TRACE.overrides++;
       TRACE.gaps.push(TRACE.lastGap);
