@@ -1854,33 +1854,21 @@ const SIM_BASE = {
   // temp > 0 samples over the adjusted values.
   playoutDefense: 0,
   candidates: 5,    // max static candidates (top-K) evaluated by simulation
-  // margin prunes that top-K set: a move more than this many static move+leave
-  // points behind the best is dropped (it can't be genuinely overruled into,
-  // so simulating it only wastes reply searches and risks a noise overrule).
-  // 0 = no pruning. Measured: across ~3800 midgame positions the deepest move
-  // a simulation could genuinely overrule the static best into sat 10 back.
-  margin: 10,
   samples: 30,      // sampled worlds, shared across candidates
-  // Challenger-budget allocator. 0 (default) = successive rejection:
-  // world-major evaluation with permanent retirement once a challenger is
-  // confidently worse (minWorlds/pruneEvery below tune it). 'halving' =
-  // sequential halving: the decision budget (meter units, or worlds when
-  // unmetered) splits into ceil(log2(challengers)) equal rounds; all
-  // survivors share every world (paired), and at each round boundary the
-  // bottom half by paired mean vs the incumbent retires. No per-bag
-  // retirement tuning, and the candidate count self-regulates — admit a
-  // generous beam and the rounds starve the losers. The incumbent is
-  // never retired (the final overrule gate needs it). 'ucb' = prior-gated
-  // paired UCB (terminal stages only): every arm carries a posterior on
-  // its gap vs the incumbent seeded by the static prior (priorSd); only
-  // arms whose posterior P(better) stays above 1-overruleP get worlds,
-  // scheduled most-promising-first on shared world prefixes, incumbent
-  // kept lazily in step. Admission is free (an arm far behind on statics
-  // never gets evaluated), so no candidate count needs tuning — admit a
-  // wide beam with margin 0.
-  alloc: 0,
-  minWorlds: 6,     // worlds evaluated before pruning may trigger
-  pruneEvery: 2,    // prune check cadence (in worlds) after the minimum
+  // Challenger-budget allocator. 'halving' (default) = sequential
+  // halving: the decision budget (meter units, or worlds when unmetered)
+  // splits into ceil(log2(challengers)) equal rounds; all survivors
+  // share every world (paired), and at each round boundary the bottom
+  // half by paired mean vs the incumbent retires. Parameter-free — it
+  // beat tuned successive-rejection retirement in every regime measured
+  // (bag1/2/3 and the midgame; that allocator and its minWorlds/
+  // pruneEvery/margin-prune knobs are deleted). 0/other = no retirement:
+  // every candidate is evaluated on every funded world (referee-style
+  // full evaluation). 'ucb' = prior-gated paired UCB (terminal stages
+  // only, experimental — loses to halving): posterior-scheduled worlds,
+  // free admission for hopeless arms. The incumbent is never retired
+  // (the final overrule gate needs it).
+  alloc: 'halving',
   // movegenBudget: work meter for a decision (terminal playout plies and
   // horizon reply scans both charge it), counted
   // in generated moves plus a 300-unit surcharge per blank in the mover's
@@ -1950,7 +1938,7 @@ const STAGES = {
   // harmful here: enumerated playout means are exact averages of biased
   // per-world values, and the across-world spread the posterior reads as
   // noise is genuine bag variance.
-  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 10, margin: 0, alloc: 'halving', scoreAware: 0, egMidBlend: 0 },
+  bag1: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, candidates: 10, alloc: 'halving', scoreAware: 0, egMidBlend: 0 },
   // bag2: the unseen pool splits into C(9,2)=36 worlds — enumerated
   // exactly (samples 100 is only the enumeration-arming ceiling; it must
   // stay >= 36). The world list is seeded-shuffled at build so the
@@ -1963,7 +1951,7 @@ const STAGES = {
   // Challenger budget allocated by sequential halving (parameter-free;
   // beat the campaign-tuned minWorlds-5 retirement 1.25 vs 1.27 on the
   // v3 benchmark, p99 ~1000ms).
-  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, samples: 100, candidates: 9, margin: 0, alloc: 'halving', egMidBlend: 0.18, movegenBudget: 110000, scoreAware: 0 },
+  bag2: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: true, samples: 100, candidates: 9, alloc: 'halving', egMidBlend: 0.18, movegenBudget: 110000, scoreAware: 0 },
   // bag3: the unseen pool splits into C(10,3)=120 worlds — too many to
   // enumerate usefully under the meter (enumeration measured worse than
   // sampling here, with or without bayes). Sampled worlds + weak Bayes
@@ -1975,7 +1963,7 @@ const STAGES = {
   // the tuning surface halving deletes). playoutDefense/playoutTemp
   // measured worse under the meter (reply quality trades against world
   // count and loses). Pre-campaign config 2.27, static 3.51; p99 ~1s.
-  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 8, margin: 0, alloc: 'halving', bayes: 1, overruleP: 0.62, priorSd: 9, movegenBudget: 95000, scoreAware: 0 },
+  bag3: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 8, alloc: 'halving', bayes: 1, overruleP: 0.62, priorSd: 9, movegenBudget: 95000, scoreAware: 0 },
   // bag4: C(11,4)=330 worlds — sampled under the movegenBudget meter
   // (which carries the per-blank surcharge this stage forced: bag4's
   // blank-heavy pools ran 17s decisions before generated-move charging
@@ -1989,7 +1977,7 @@ const STAGES = {
   // worlds, 333 positions, p99 <= 1100ms required): regret
   // 2.62/decision at 55% optimal, p99 ~1000ms (pre-campaign config
   // 4.62 / 47%; static 7.70 / 38%).
-  bag4: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 7, margin: 0, alloc: 'halving', bayes: 0, egMidBlend: 0.6, movegenBudget: 70000, scoreAware: 0 },
+  bag4: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 7, alloc: 'halving', bayes: 0, egMidBlend: 0.6, movegenBudget: 70000, scoreAware: 0 },
   // bag5: C(12,5)=792 worlds, sampled under the meter. Same campaign
   // shape as bag4 (halving allocation, bayes off, greedy playouts) with
   // the cross-bag trends continuing on schedule: egMidBlend up again
@@ -1998,7 +1986,7 @@ const STAGES = {
   // contract loosens past ~1200ms). Scored against the v7 all-policy
   // oracle (401 positions, p99 <= 1100ms required): regret 3.03/decision
   // at 54% optimal, p99 ~1060ms (pre-campaign 3.96 / 50%; static 6.75).
-  bag5: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 7, margin: 0, alloc: 'halving', bayes: 0, egMidBlend: 0.7, movegenBudget: 85000, scoreAware: 0 },
+  bag5: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 7, alloc: 'halving', bayes: 0, egMidBlend: 0.7, movegenBudget: 85000, scoreAware: 0 },
   // bag6: C(13,6)=1716 worlds, sampled under the meter. Campaign shape
   // as bag4/5 (halving, bayes off, greedy playouts); the cross-bag trends
   // continue — candidates step down 7 -> 6 (the pre-campaign wisdom that
@@ -2008,7 +1996,7 @@ const STAGES = {
   // all-policy oracle (416 positions, p99 <= 1100ms required): regret
   // 2.84/decision at 51% optimal, p99 ~1070ms (pre-campaign 4.30 / 46%;
   // static 5.37 — note the static gap narrows as bags deepen).
-  bag6: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 6, margin: 0, alloc: 'halving', bayes: 0, egMidBlend: 0.8, movegenBudget: 95000, scoreAware: 0 },
+  bag6: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 6, alloc: 'halving', bayes: 0, egMidBlend: 0.8, movegenBudget: 95000, scoreAware: 0 },
   // bag7: C(14,7)=3432 worlds, the longest rollouts of any band, and the
   // midgame boundary — where two cross-bag laws invert back: BAYES
   // RETURNS (off measured 0.5 worse; the neighboring bagGt7 stage lives
@@ -2022,16 +2010,21 @@ const STAGES = {
   // straddles 1100ms for +0.08 regret. Scored against the v7 all-policy
   // oracle (400 positions, p99 <= 1100ms required): regret 2.38/decision
   // at 58% optimal, p99 ~1070ms (pre-campaign 3.39 / 53%; static 4.07).
-  bag7: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 5, margin: 0, alloc: 'halving', bayes: 1, overruleP: 0.62, priorSd: 16, movegenBudget: 105000, scoreAware: 0 },
-  // bagGt7 (deep bag): value each world by a 2-ply horizon (score + leave diff).
-  // Midgame decision rule, measured on a 1,758-position contested-decision
-  // benchmark against a 100-world margin-12 oracle: Bayesian overrule at
-  // P>0.7 with 40 worlds scores 0.48 regret/decision at 76.7% oracle
-  // agreement vs 0.69 / 72.0% for the previous z=1.5 gate at 30 worlds —
-  // the strict gate blocked more correct overrules than the noise it
-  // filtered. Same p99 (~1.1s). The threshold optimum is interior: P<=0.6
-  // tested worse (sim noise starts overruling the static prior too often).
-  bagGt7: { ...SIM_BASE, mode: 'horizon', samples: 40, bayes: 1, overruleP: 0.7 },
+  bag7: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 5, alloc: 'halving', bayes: 1, overruleP: 0.62, priorSd: 16, movegenBudget: 105000, scoreAware: 0 },
+  // bagGt7 (deep bag): value each world by a 2-ply horizon (score + leave
+  // diff), worlds funded by the movegenBudget meter (horizon reply scans
+  // charge it, blank surcharge included) with sequential-halving
+  // allocation over 6 candidates. The metered-halving campaign's verdict
+  // was a LATENCY win, not a regret win: on the full 3,008-position
+  // oracle benchmark it ties the old unmetered 40-world config (0.323 vs
+  // 0.331 regret, 81% agreement) while halving the tail — p99 1951ms ->
+  // 1055ms. Under halving, margin pruning and the bayes gate's
+  // parameters measured inert (P 0.62 vs 0.7 and priorSd 12 vs 16 flip
+  // nothing; the allocator dominates); the P>0.7 overrule gate itself
+  // remains the selection rule. Earlier decision-rule history: Bayesian
+  // overrule replaced the z=1.5 gate (0.48 vs 0.69 on the contested
+  // bench); the threshold optimum is interior (P<=0.6 worse).
+  bagGt7: { ...SIM_BASE, mode: 'horizon', samples: 100, candidates: 6, alloc: 'halving', movegenBudget: 135000, bayes: 1, overruleP: 0.7 },
 };
 
 // bag length -> stage key.
@@ -2726,12 +2719,7 @@ async function collectTopCandidates(rack, cfg) {
   const all = [];
   await scanStaticMoves(rack, (m, val) => { all.push({ m, val }); });
   all.sort((a, b) => b.val - a.val);
-  let n = Math.min(cfg.candidates, all.length);
-  if (cfg.margin > 0 && n > 0) {
-    const cut = all[0].val - cfg.margin;
-    while (n > 1 && all[n - 1].val < cut) n--; // drop moves beyond the margin
-  }
-  return all.slice(0, n);
+  return all.slice(0, Math.min(cfg.candidates, all.length));
 }
 
 // ============================================================
@@ -3160,10 +3148,6 @@ async function findBestSimMove(rack, cfg) {
       tiles: exchange.tiles, staticVal: leaveScale0 * exchange.value });
     arms.sort((a, b) => b.staticVal - a.staticVal);
     if (arms.length > cfg.candidates) arms.length = cfg.candidates;
-    if (cfg.margin > 0) {
-      const cut = arms[0].staticVal - cfg.margin;
-      while (arms.length > 1 && arms[arms.length - 1].staticVal < cut) arms.pop();
-    }
   }
   const armResult = a => a.move ? a.move : { exchange: true, tiles: a.tiles };
   if (arms.length === 1) return armResult(arms[0]);
@@ -3470,23 +3454,6 @@ async function findBestSimMove(rack, cfg) {
           for (let r = Math.ceil(ranked.length / 2); r < ranked.length; r++) alive[ranked[r][1]] = false;
         }
         continue;
-      }
-      // Prune challengers that are confidently worse than the incumbent —
-      // they can never win the final overrule gate, so stop paying for
-      // their reply searches. The incumbent (candidate 0) is never pruned.
-      if (n >= cfg.minWorlds && n < M && (n - cfg.minWorlds) % cfg.pruneEvery === 0) {
-        for (let ci = 1; ci < K; ci++) {
-          if (!alive[ci]) continue;
-          if (cfg.bayes) {
-            // Retire a challenger once it is confidently worse than the
-            // incumbent: posterior P(better) below the complement of the
-            // overrule threshold — it can no longer clear overruleP.
-            if (bayesProb(vals, ci, 0, n) < 1 - cfg.overruleP) alive[ci] = false;
-          } else {
-            const [mean] = pairedStats(vals, ci, 0, n);
-            if (mean < 0) alive[ci] = false;
-          }
-        }
       }
     }
   } finally {
