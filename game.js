@@ -69,7 +69,7 @@ const state = {
   trie: null, // typed-array packed dictionary trie (built by ensureTrie)
   gameOver: false,
   consecutivePasses: 0,
-  lifelineUsed: false,
+  lifelinesLeft: 2,
   // Incremented on every new game so in-flight async turns can detect
   // that the game they were computing for has been discarded.
   gameId: 0,
@@ -77,6 +77,102 @@ const state = {
   blankCallback: null,
   lastPlay: new Set(),  // set of "row,col" keys for the most recent play
 };
+
+// ============================================================
+// PERSISTED APP STATE (localStorage)
+// ============================================================
+// Envelope: { v: APP_STATE_VERSION, saved: <epoch ms>, game: {...},
+// log: <move-log innerHTML> }. Versioned and extensible: when the game
+// payload's shape changes, bump APP_STATE_VERSION and add an
+// APP_STATE_MIGRATIONS[oldV] upgrader (transforms a v=oldV envelope to
+// v=oldV+1); the loader applies upgraders in sequence, so older saves
+// keep working as long as the chain is intact. A corrupted envelope, an
+// unknown future version, or a version with no migration path is
+// discarded and a fresh game starts. Saves happen only at stable points
+// (start of the player's turn, game over), so a restore never lands
+// mid-computer-turn; uncommitted pending tiles are deliberately not
+// captured.
+const APP_STATE_KEY = 'lexite-app-state';
+const APP_STATE_VERSION = 2;
+const APP_STATE_MIGRATIONS = {
+  // v1 lacked game.turn (saves only happened on the player's turn).
+  1: env => { env.game.turn = 'player'; env.v = 2; return env; },
+};
+
+function saveAppState() {
+  if (state.pending.length > 0) return; // never capture a half-placed move
+  try {
+    const env = {
+      v: APP_STATE_VERSION,
+      saved: Date.now(),
+      game: {
+        turn: state.turn,
+        board: state.board,
+        bag: state.bag,
+        playerRack: state.playerRack,
+        computerRack: state.computerRack,
+        playerScore: state.playerScore,
+        computerScore: state.computerScore,
+        isFirstMove: state.isFirstMove,
+        consecutivePasses: state.consecutivePasses,
+        lifelinesLeft: state.lifelinesLeft,
+        gameOver: state.gameOver,
+        lastPlay: [...state.lastPlay],
+      },
+      log: document.getElementById('move-log').innerHTML,
+    };
+    localStorage.setItem(APP_STATE_KEY, JSON.stringify(env));
+  } catch (e) { /* quota/private mode: persistence is best-effort */ }
+}
+
+// Returns true if a saved game was restored into state and the DOM.
+function restoreAppState() {
+  let env;
+  try {
+    const raw = localStorage.getItem(APP_STATE_KEY);
+    if (!raw) return false;
+    env = JSON.parse(raw);
+    while (env && env.v < APP_STATE_VERSION && APP_STATE_MIGRATIONS[env.v]) {
+      env = APP_STATE_MIGRATIONS[env.v](env);
+    }
+    if (!env || env.v !== APP_STATE_VERSION) return false;
+    const g = env.game;
+    if (!Array.isArray(g.board) || g.board.length !== 15 ||
+        !Array.isArray(g.bag) || !Array.isArray(g.playerRack) || !Array.isArray(g.computerRack)) {
+      return false;
+    }
+    state.board = g.board;
+    state.bag = g.bag;
+    state.playerRack = g.playerRack;
+    state.computerRack = g.computerRack;
+    state.playerScore = g.playerScore;
+    state.computerScore = g.computerScore;
+    state.isFirstMove = !!g.isFirstMove;
+    state.consecutivePasses = g.consecutivePasses || 0;
+    state.lifelinesLeft = g.lifelinesLeft ?? 2;
+    state.gameOver = !!g.gameOver;
+    state.lastPlay = new Set(g.lastPlay || []);
+  } catch (e) {
+    return false;
+  }
+  state.turn = (env.game.turn === 'computer' && !state.gameOver) ? 'computer' : 'player';
+  state.pending = [];
+  state.selectedRackIdx = null;
+  state.dragRackIdx = null;
+  state.exchangeMode = false;
+  state.exchangeSelected = new Set();
+  state.playerTurnActive = !state.gameOver && state.turn === 'player';
+  state.gameId++;
+  buildBoardDOM();
+  renderBoard();
+  renderRack();
+  renderScores();
+  updateBagCount();
+  updateLifelineButton();
+  document.getElementById('move-log').innerHTML = typeof env.log === 'string' ? env.log : '';
+  logEntry('Game restored.', 'system');
+  return true;
+}
 
 // ============================================================
 // INIT & LOAD
@@ -142,7 +238,7 @@ async function init() {
   // word list, so don't make them wait on the ~1.7 MB download to appear.
   // Player controls stay frozen until the dictionary is ready to validate
   // moves; enablePlayerControls(false) also blocks cell/rack interaction.
-  newGame();
+  if (!restoreAppState()) newGame();
   enablePlayerControls(false);
 
   try {
@@ -153,7 +249,14 @@ async function init() {
   }
   await loadSuperTable(); // best-effort; leaves the linear model in place on failure
   await loadEndgameLeaves(); // best-effort; endgame falls back to face-value deadwood
-  enablePlayerControls(true);
+  if (!state.gameOver && state.turn === 'computer') {
+    // Restored mid-thinking: the player's move is on the board and it is
+    // the computer's turn — resume it now that the dictionary is ready.
+    enablePlayerControls(false);
+    computerTurn();
+  } else {
+    enablePlayerControls(!state.gameOver); // a restored finished game stays frozen
+  }
 }
 
 async function loadWordList() {
@@ -263,7 +366,8 @@ function newGame() {
   state.gameOver = false;
   state.consecutivePasses = 0;
   state.lastPlay = new Set();
-  state.lifelineUsed = false;
+  state.lifelinesLeft = 2;
+  updateLifelineButton();
   state.playerTurnActive = true;
   state.gameId++;
   state.exchangeMode = false;
@@ -713,10 +817,11 @@ function enablePlayerControls(on) {
   state.playerTurnActive = on;
   if (!on && state.exchangeMode) exitExchangeMode();
   document.getElementById('btn-play').disabled = !on;
-  document.getElementById('btn-lifeline').disabled = !on || state.lifelineUsed;
+  document.getElementById('btn-lifeline').disabled = !on || state.lifelinesLeft <= 0;
   document.getElementById('btn-shuffle').disabled = !on;
   document.getElementById('btn-recall').disabled = !on;
   document.getElementById('btn-exchange').disabled = !on || state.bag.length < 7;
+  if (on) saveAppState(); // the start of a player turn is a stable point
 }
 
 // ============================================================
@@ -1275,10 +1380,19 @@ function passPlayerTurn() {
   setTimeout(computerTurn, 300);
 }
 
+// Button label carries the remaining count; disabled at zero (and while
+// it is not the player's turn, via enablePlayerControls).
+function updateLifelineButton() {
+  const btn = document.getElementById('btn-lifeline');
+  btn.textContent = `Play Lifeline (${state.lifelinesLeft})`;
+  if (state.lifelinesLeft <= 0) btn.disabled = true;
+}
+
 async function lifelineTurn() {
-  if (!state.playerTurnActive || state.gameOver || state.lifelineUsed) return;
-  state.lifelineUsed = true;
-  document.getElementById('btn-lifeline').disabled = true;
+  if (!state.playerTurnActive || state.gameOver || state.lifelinesLeft <= 0) return;
+  state.lifelinesLeft--;
+  updateLifelineButton();
+  document.getElementById('btn-lifeline').disabled = true; // no double-fire during the async search
   recallAllTiles();
   enablePlayerControls(false);
   const gameId = state.gameId;
@@ -1336,6 +1450,7 @@ async function lifelineTurn() {
 async function computerTurn() {
   // Bail if a new game started before this (scheduled) turn began.
   if (state.turn !== 'computer' || state.gameOver) return;
+  saveAppState(); // stable point: the player's move is committed
   const gameId = state.gameId;
   await yieldToUI();
 
@@ -3909,6 +4024,7 @@ function endGame(reason) {
   scoresEl.appendChild(scoreLine);
   document.getElementById('end-winner').textContent = winner;
   document.getElementById('end-overlay').classList.remove('hidden');
+  saveAppState(); // stable point: the finished game survives a reload
 }
 
 // ============================================================
