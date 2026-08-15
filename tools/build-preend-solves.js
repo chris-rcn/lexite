@@ -42,7 +42,9 @@ if (!OUT || OUT.startsWith('--')) {
 }
 const flag = (f, d) => { const i = process.argv.indexOf(f); return i === -1 ? d : process.argv[i + 1]; };
 const SEEDS = parseInt(flag('--seeds', '20000'), 10);
-const BASE_SEED = parseInt(flag('--base-seed', '862000'), 10);
+// Creation-only: an existing file's stored baseSeed always wins (the
+// stream state is baseSeed + scanned); a differing CLI value only warns.
+let BASE_SEED = parseInt(flag('--base-seed', '862000'), 10);
 const K = parseInt(flag('--candidates', '8'), 10);
 const BUDGET = parseInt(flag('--budget', '300000'), 10);
 const BAG = parseInt(flag('--bag-size', '2'), 10);
@@ -215,6 +217,11 @@ Q.evalInRealm(`
     } finally { removeFromBoard(pick.m.placements); }
     return (turn === 0 ? pick.m.score : -pick.m.score) + ev;
   };
+  // Policy-oracle referee pin: the playout policy must be a function of
+  // the file's stamped parameters, never the live engine config — prod
+  // locks between builds must not drift the referee. egMidBlend auto
+  // (-1) for every low-bag stage, stamped in META.policyConfig.
+  ${ORACLE === 'policy' ? "for (const st of ['bag1','bag2','bag3','bag4','bag5','bag6','bag7']) STAGES[st].egMidBlend = -1;" : ''}
   globalThis.__policySolve = async function (boardJson, rackJson) {
     state.board = JSON.parse(boardJson); state.isFirstMove = false; state.bag = new Array(BAG).fill('?');
     const rack = JSON.parse(rackJson).map(t => ({ letter: t.letter, isBlank: t.isBlank }));
@@ -394,8 +401,9 @@ const META = ORACLE === 'policy' ? {
   bagSize: BAG, candidates: K, baseSeed: BASE_SEED,
   seedMode: 'stream',
   candidateOrder: 'blend',
-  policyConfig: { worlds: PWORLDS, playoutDefense: 3, playoutTemp: 0 },
+  policyConfig: { worlds: PWORLDS, playoutDefense: 3, playoutTemp: 0, egMidBlend: -1 },
   egWeightsMd5,
+  gameJsMd5: crypto.createHash('md5').update(fs.readFileSync(ENGINE)).digest('hex'),
 } : {
   // v5: bag==3 non-emptying arms priced by in-split expectimax recursion
   // (rec:1) — policy playouts measured +4..+11 optimistic (v4 mc pricing)
@@ -413,8 +421,15 @@ const META = ORACLE === 'policy' ? {
 };
 let coll = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, 'utf8'))
   : { meta: META, scanned: 0, entries: [] };
-if (JSON.stringify(coll.meta) !== JSON.stringify(META)) {
-  console.error('Existing collection has different solver parameters/weights; refusing to append.');
+if (coll.meta.baseSeed !== BASE_SEED) {
+  console.error(`NOTE: resuming the file's seed stream (baseSeed ${coll.meta.baseSeed}); CLI --base-seed ${BASE_SEED} ignored.`);
+  BASE_SEED = coll.meta.baseSeed;
+}
+if (coll.meta.gameJsMd5 && META.gameJsMd5 && coll.meta.gameJsMd5 !== META.gameJsMd5) {
+  console.error(`NOTE: game.js has changed since this collection was built (${coll.meta.gameJsMd5.slice(0, 8)} -> ${META.gameJsMd5.slice(0, 8)}); referee playout policy may differ. Appending anyway.`);
+}
+if (JSON.stringify({ ...coll.meta, baseSeed: 0, gameJsMd5: 0 }) !== JSON.stringify({ ...META, baseSeed: 0, gameJsMd5: 0 })) {
+  console.error('Existing collection has different oracle/solver parameters or weights; refusing to append.');
   process.exit(2);
 }
 function save() { fs.writeFileSync(OUT + '.tmp', JSON.stringify(coll)); fs.renameSync(OUT + '.tmp', OUT); }

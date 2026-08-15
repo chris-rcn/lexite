@@ -1881,7 +1881,8 @@ const SIM_BASE = {
   alloc: 0,
   minWorlds: 6,     // worlds evaluated before pruning may trigger
   pruneEvery: 2,    // prune check cadence (in worlds) after the minimum
-  // movegenBudget (terminal stages): work meter for a decision, counted
+  // movegenBudget: work meter for a decision (terminal playout plies and
+  // horizon reply scans both charge it), counted
   // in generated moves plus a 300-unit surcharge per blank in the mover's
   // rack per ply (blank scans do ~26x the work per generated move);
   // in GENERATED MOVES (plus ~10/ply scan overhead) — the unit tracks
@@ -1989,32 +1990,39 @@ const STAGES = {
   // 2.62/decision at 55% optimal, p99 ~1000ms (pre-campaign config
   // 4.62 / 47%; static 7.70 / 38%).
   bag4: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 7, margin: 0, alloc: 'halving', bayes: 0, egMidBlend: 0.6, movegenBudget: 70000, scoreAware: 0 },
-  // bag5: C(12,5)=792 worlds. Same starved-budget regime as bag4 — reuse the
-  // 10-world / 4-candidate split (regret 4.30 vs a 100-world greedy-sample
-  // oracle over 224 positions, paired gap +1.16 pts vs static, p99 ~830ms). The
-  // frontier nominal best was C=3/S=16 (+1.24) but within noise of this; holding
-  // the shared 10-world budget keeps the band consistent with bag4. NOTE: the
-  // naive C=6/S=6 is actually WORSE than static here (winner's curse on 6 noisy
-  // worlds), and the gap-vs-static is against a greedy oracle — treat as tuning,
-  // not a strength verdict, pending a win-rate A/B.
-  bag5: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 4, margin: 0, scoreAware: 0 },
-  // bag6: C(13,6)=1716 worlds. The board is wide open, so the best move is almost
-  // always one of the top 2 — the budget-optimal split drops to just 2
-  // candidates over 10 worlds. Against a sim:50:8 (50-world) greedy oracle over
-  // 223 positions: paired gap +1.77 pts of picked-move value vs static, p99
-  // ~650ms (well under budget). C=2 beats C=3/4 here (+1.4-1.6); the naive
-  // C=6/S=6 recovers only +0.56. As with bag4/5 this is a greedy-oracle tuning
-  // result, not a strength verdict — pending a win-rate A/B.
-  bag6: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 10, candidates: 2, margin: 0, scoreAware: 0 },
-  // bag7: C(14,7)=3432 worlds and the longest rollouts of any pre-endgame band
-  // (a move that doesn't empty the bag plays out through bag 7->0). Sample 8
-  // worlds over 2 candidates. Against a sim:50:6 (50-world) greedy oracle over
-  // 211 positions: paired gap +0.60 pts vs static, p99 ~1010ms (at the budget
-  // line). This is the smallest edge of any band and the greedy oracle is
-  // thinnest here (1.5% world coverage) — treat as tuning, not a strength
-  // verdict. A 2-ply horizon eval (unlike terminal rollout) does NOT beat static
-  // here: it never reaches the endgame where the value lives.
-  bag7: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 8, candidates: 2, margin: 0, scoreAware: 0 },
+  // bag5: C(12,5)=792 worlds, sampled under the meter. Same campaign
+  // shape as bag4 (halving allocation, bayes off, greedy playouts) with
+  // the cross-bag trends continuing on schedule: egMidBlend up again
+  // (0.6 -> 0.7 — the endgame keeps receding), candidates steady at 7,
+  // budget 85k (95k is worth another 0.23 regret whenever the latency
+  // contract loosens past ~1200ms). Scored against the v7 all-policy
+  // oracle (401 positions, p99 <= 1100ms required): regret 3.03/decision
+  // at 54% optimal, p99 ~1060ms (pre-campaign 3.96 / 50%; static 6.75).
+  bag5: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 7, margin: 0, alloc: 'halving', bayes: 0, egMidBlend: 0.7, movegenBudget: 85000, scoreAware: 0 },
+  // bag6: C(13,6)=1716 worlds, sampled under the meter. Campaign shape
+  // as bag4/5 (halving, bayes off, greedy playouts); the cross-bag trends
+  // continue — candidates step down 7 -> 6 (the pre-campaign wisdom that
+  // deep bags concentrate best-move mass returns, gently: 5 is too few),
+  // egMidBlend up again (0.7 -> 0.8), budget at an interior optimum 95k
+  // (98k measured worse, not just slower). Scored against the v7
+  // all-policy oracle (416 positions, p99 <= 1100ms required): regret
+  // 2.84/decision at 51% optimal, p99 ~1070ms (pre-campaign 4.30 / 46%;
+  // static 5.37 — note the static gap narrows as bags deepen).
+  bag6: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 6, margin: 0, alloc: 'halving', bayes: 0, egMidBlend: 0.8, movegenBudget: 95000, scoreAware: 0 },
+  // bag7: C(14,7)=3432 worlds, the longest rollouts of any band, and the
+  // midgame boundary — where two cross-bag laws invert back: BAYES
+  // RETURNS (off measured 0.5 worse; the neighboring bagGt7 stage lives
+  // on the same prior machinery) with priorSd 16 right where the
+  // priorSd-tracks-world-count law puts its ~20-world regime, and
+  // egMidBlend goes fully inert (auto; the knob's arc across bags ends
+  // at "doesn't matter"). Candidates step down again to 5. Horizon mode
+  // decisively rejected (4.56 vs 2.38 — terminal playouts rule to the
+  // border; a 2-ply horizon never reaches the endgame where the value
+  // lives). Budget 105k over 108k for tail margin: 108k's p99 band
+  // straddles 1100ms for +0.08 regret. Scored against the v7 all-policy
+  // oracle (400 positions, p99 <= 1100ms required): regret 2.38/decision
+  // at 58% optimal, p99 ~1070ms (pre-campaign 3.39 / 53%; static 4.07).
+  bag7: { ...SIM_BASE, static: false, mode: 'terminal', enumerate: false, samples: 100, candidates: 5, margin: 0, alloc: 'halving', bayes: 1, overruleP: 0.62, priorSd: 16, movegenBudget: 105000, scoreAware: 0 },
   // bagGt7 (deep bag): value each world by a 2-ply horizon (score + leave diff).
   // Midgame decision rule, measured on a 1,758-position contested-decision
   // benchmark against a 100-world margin-12 oracle: Bayesian overrule at
@@ -3359,7 +3367,7 @@ async function findBestSimMove(rack, cfg) {
       // overshoot is bounded by one playout, not one world. An aborted
       // world's partial contributions are rolled back below — every
       // candidate is always judged on identical complete worlds.
-      const preLens = toTerminal && cfg.movegenBudget > 0 ? vals.map(v => v.length) : null;
+      const preLens = cfg.movegenBudget > 0 ? vals.map(v => v.length) : null;
       let worldAborted = false;
       for (let ci = 0; ci < K; ci++) {
         if (!alive[ci]) continue;
@@ -3403,6 +3411,13 @@ async function findBestSimMove(rack, cfg) {
         // board change, kept = rack minus discards — same accounting.
         state.bag = world.slice(cursor);
         const reply = await findBestMove(oppRack);
+        // Horizon-world meter charge: the reply scan is the world's cost
+        // (same units and blank surcharge as terminal playout plies).
+        {
+          let bl = 0;
+          for (const t of oppRack) if (t.isBlank) bl++;
+          meter.used += 10 + EG_SCAN_MOVE_COUNT + 300 * bl;
+        }
         const rScore = reply && reply.placements ? reply.score : 0;
         const oppKept = reply ? rackWithout(oppRack, reply.placements || reply.tiles) : oppRack;
         const oppDrawStart = cursor;

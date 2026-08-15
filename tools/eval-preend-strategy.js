@@ -394,6 +394,9 @@ function policyValue(meta, bJson, rackStr, poolStr, pick) {
   if (!policyRealm) {
     policyRealm = m.loadEngine(ENGINE, words, {});
     policyRealm.evalInRealm(`ensureTrie(); ensureLeaveTables();
+      ${meta.policyConfig.egMidBlend !== undefined
+        ? `for (const st of ['bag1','bag2','bag3','bag4','bag5','bag6','bag7']) STAGES[st].egMidBlend = ${meta.policyConfig.egMidBlend};`
+        : '// pre-pin collection: playout blends follow the live engine config'}
       const BAG = ${meta.bagSize};
       const PWORLDS = ${meta.policyConfig.worlds};
       globalThis.__policyValue = async function () {
@@ -439,6 +442,12 @@ async function main() {
   console.log(coll.meta.oracle === 'policy'
     ? `Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, all-policy oracle: defense-${coll.meta.policyConfig.playoutDefense} playouts x ${coll.meta.policyConfig.worlds} worlds, top-${coll.meta.candidates})`
     : `Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, solver budget ${solver.budget}${solver.width ? `, width ${solver.width}, terminal` : ' (legacy reference)'}, top-${coll.meta.candidates})`);
+  if (coll.meta.gameJsMd5) {
+    const cur = require('crypto').createHash('md5').update(fs.readFileSync(ENGINE)).digest('hex');
+    if (cur !== coll.meta.gameJsMd5) {
+      console.log(`NOTE: game.js differs from the one this collection was built under (${coll.meta.gameJsMd5.slice(0, 8)} vs ${cur.slice(0, 8)}).`);
+    }
+  }
   if (coll.meta.egWeightsMd5) {
     const crypto = require('crypto');
     const egPath = path.join(__dirname, '..', 'endgame-leaves.json.gz');
