@@ -1923,6 +1923,12 @@ const STAGES = {
   // uncapped by default; movegenBudget is the latency contract (all
   // movegen work, ordering included, draws on one meter; on exhaustion
   // the best fully-searched root or the greedy fallback plays).
+  // (Halving-style depth-screened root elimination was tried and measured
+  // far worse — 3.14 vs 0.69 regret at equal latency: screens eliminate on
+  // approximate shallow values, whose rollout-frontier errors are
+  // systematic; the containment windows below eliminate only on
+  // full-depth refutation proof. Halving belongs to stochastic arm
+  // evaluation, not full-information search.)
   bag0: { static: false, movegenBudget: 500, width0: 70, width1: 25, width2: 5, width: 1, order: 2, tt: 1 },
   // bag1: near-perfect information. The unseen pool splits into only ~8
   // (opponent rack | bag) worlds, so enumerate them all exactly rather
