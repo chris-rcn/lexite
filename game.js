@@ -1773,6 +1773,17 @@ function installEvalDither(d, seed) {
 // info (the unseen pool inferred from the board and our rack, not the real
 // bag), so it is legal to run in production.
 let bagAwareLeave = true;
+// Global multiplier on every stage's movegenBudget (the per-decision work
+// meter). 1 = the campaign-tuned budgets as shipped. Lets the whole engine
+// be traded along its latency/quality curve with one number — a slower
+// device can run 0.5, an analysis mode 4 — without re-tuning each stage,
+// since the campaigns found the per-stage optima at a common contract and
+// their ratios are what matter. Applies wherever a budget is consumed
+// (terminal playout meters, horizon reply scans, the bag0 solver's node
+// cap); a stage with budget 0 (unmetered) stays unmetered at any scale.
+let budgetScale = 1;
+// Scaled budget of a stage config (0 stays 0 — unmetered).
+const budgetOf = cfg => (cfg.movegenBudget > 0 ? cfg.movegenBudget * budgetScale : cfg.movegenBudget);
 // (A leaveWeight multiplier on the leave contribution was tried and removed:
 // a corpus regression suggested leaves were under-weighted ~2x vs move score
 // — tools/validate-leave-fade.js — but static A/Bs measured 1.5x at -4.5
@@ -2366,7 +2377,7 @@ function endgameSearch(myRack, oppRack, passes, ply, alpha, beta, budget) {
   // both-stuck estimate here would systematically overvalue moves whose
   // reply subtree got truncated, and could pick worse than greedy — so we
   // unwind to findBestEndgameMove, which falls back to the greedy move.
-  if (budget.used >= STAGES.bag0.movegenBudget) throw ENDGAME_ABORT;
+  if (budget.used >= budgetOf(STAGES.bag0)) throw ENDGAME_ABORT;
   // depth 0/unset = uncapped: search to the game's true end (double-pass
   // or going out). A positive cap re-enables the greedy-rollout frontier,
   // kept only as an experiment knob — every measurement since the
@@ -2627,7 +2638,7 @@ async function findBestEndgameMove(rack) {
       // The meter governs ordering too: once spent, remaining candidates
       // keep their stage-1 flat value — the budget is a latency contract,
       // and pricing is not exempt from it.
-      if (budget.used >= STAGES.bag0.movegenBudget) return { mv, v: flatV };
+      if (budget.used >= budgetOf(STAGES.bag0)) return { mv, v: flatV };
       const leave = rackWithout(rack, mv.placements);
       let v;
       if (leave.length === 0) {
@@ -3458,13 +3469,14 @@ async function findBestSimMove(rack, cfg) {
   const vals = Array.from({ length: K }, () => []); // vals[arm][world]
   const alive = new Array(K).fill(true);
   // Sequential halving schedule: cut points across the decision budget.
+  const METER = budgetOf(cfg); // scaled once: the decision's work contract
   const halving = cfg.alloc === 'halving';
   let roundCuts = null, roundIdx = 0;
   if (halving) {
     const rounds = Math.max(1, Math.ceil(Math.log2(Math.max(2, K - 1))));
     roundCuts = [];
     for (let r = 1; r < rounds; r++) {
-      roundCuts.push(cfg.movegenBudget > 0 ? cfg.movegenBudget * r / rounds : M * r / rounds);
+      roundCuts.push(METER > 0 ? METER * r / rounds : M * r / rounds);
     }
   }
   // Terminal-stage meter (see SIM_BASE.movegenBudget).
@@ -3497,7 +3509,7 @@ async function findBestSimMove(rack, cfg) {
         vals[ci].push(scoreAware ? normalCdf((myScoreMargin + margin) / sigmaAtBag(realBag.length)) : margin);
       };
       while (true) {
-        if (cfg.movegenBudget > 0 && meter.used >= cfg.movegenBudget) break;
+        if (METER > 0 && meter.used >= METER) break;
         // Schedule by OPTIMISM (posterior upper bound), not by P(better):
         // an arm deep behind on statics has a low prior mean but a wide
         // posterior — its upper bound competes, so it earns worlds. Close
@@ -3531,11 +3543,11 @@ async function findBestSimMove(rack, cfg) {
       // overshoot is bounded by one playout, not one world. An aborted
       // world's partial contributions are rolled back below — every
       // candidate is always judged on identical complete worlds.
-      const preLens = cfg.movegenBudget > 0 ? vals.map(v => v.length) : null;
+      const preLens = METER > 0 ? vals.map(v => v.length) : null;
       let worldAborted = false;
       for (let ci = 0; ci < K; ci++) {
         if (!alive[ci]) continue;
-        if (preLens && meter.used >= cfg.movegenBudget) { worldAborted = true; break; }
+        if (preLens && meter.used >= METER) { worldAborted = true; break; }
         const arm = arms[ci];
         const myKept = arm.kept;
         if (arm.placements) applyToBoard(arm.placements);
@@ -3622,7 +3634,7 @@ async function findBestSimMove(rack, cfg) {
       if (halving) {
         // Cross any round boundaries reached this world (the meter can jump
         // past several) and halve the surviving challengers at each.
-        const progress = cfg.movegenBudget > 0 ? meter.used : n;
+        const progress = METER > 0 ? meter.used : n;
         while (roundIdx < roundCuts.length && progress >= roundCuts[roundIdx]) {
           roundIdx++;
           const ranked = [];
@@ -3759,7 +3771,7 @@ async function findBestPreEndgameMove(rack, cfg) {
   const wgt = 1 / subsets.length;
   const boardSnap = state.board.map(r => r.slice());
   const savedBudget = STAGES.bag0.movegenBudget;
-  STAGES.bag0.movegenBudget = cfg.preendBudget;
+  STAGES.bag0.movegenBudget = cfg.preendBudget * budgetScale;
   // Fresh transposition table for this decision: worlds differ by one
   // drawn tile and candidates share the pre-move board, so the solves
   // overlap heavily — the cross-world sharing that makes per-world
