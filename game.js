@@ -1773,6 +1773,13 @@ function installEvalDither(d, seed) {
 // info (the unseen pool inferred from the board and our rack, not the real
 // bag), so it is legal to run in production.
 let bagAwareLeave = true;
+// (A leaveWeight multiplier on the leave contribution was tried and removed:
+// a corpus regression suggested leaves were under-weighted ~2x vs move score
+// — tools/validate-leave-fade.js — but static A/Bs measured 1.5x at -4.5
+// pts/game over 2,269 games and 0.85x at -1.9 +- 1.9, i.e. the response is
+// peaked at the trained scale from both sides. The regression's margin
+// channel was confounded by position quality; TD training already delivers
+// whatever shrinkage the argmax deserves.)
 function installBagAwareLeave(on) { bagAwareLeave = !!on; }
 
 // Full tile distribution by letter code, built lazily (TILE_DATA counts).
@@ -2820,6 +2827,14 @@ async function scanStaticMoves(rack, onMove) {
 // candidates=1 with no simulation. Distinct from findBestStaticMove,
 // which is move-only and remains the in-simulation opponent model.
 async function findBestStaticPlay(rack) {
+  // Static endgame with one ply of look-ahead: when bag0.playoutDefense
+  // is >= 2 and the bag is empty, rank moves by endgame value minus the
+  // responder's best endgame-value answer (two-ply; information-legal —
+  // bag-0 racks are public via tile tracking). Same policy the sim
+  // playouts' defense branch uses; here it upgrades static play itself.
+  if (state.bag.length === 0 && STAGES.bag0.playoutDefense >= 2) {
+    return findTwoPlyStaticEndgameMove(rack);
+  }
   let bestVal = -Infinity;
   let bestMove = null;
   await scanStaticMoves(rack, (m, val) => {
@@ -2828,6 +2843,41 @@ async function findBestStaticPlay(rack) {
   const exchange = state.bag.length >= 7 ? bestExchangeKeep(rack) : null;
   if (exchange && exchange.value > bestVal) return { exchange: true, tiles: exchange.tiles };
   return bestMove;
+}
+
+// Two-ply static endgame pick (see findBestStaticPlay). Terminal moves
+// (going out) have exact values and no responder; only the best one
+// competes with the refined continuing moves.
+async function findTwoPlyStaticEndgameMove(rack) {
+  const oppRack = deriveOpponentRack(rack);
+  const gens = allMovesSorted(rack, { used: 0 });
+  if (gens.length === 0) return null;
+  const cand = [], vals = [];
+  let bt = null, btv = -Infinity;
+  for (const m of gens) {
+    const leave = rackWithout(rack, m.placements);
+    const v = endgameStaticValue(m, leave, oppRack);
+    if (leave.length === 0) { if (v > btv) { btv = v; bt = m; } }
+    else { cand.push(m); vals.push(v); }
+  }
+  const order = vals.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 8);
+  for (const [v, i] of order) {
+    const m = cand[i];
+    applyToBoard(m.placements);
+    const myLeave = rackWithout(rack, m.placements);
+    let rbest = -Infinity;
+    try {
+      for (const rm of allMovesSorted(oppRack, { used: 0 })) {
+        const x = endgameStaticValue(rm, rackWithout(oppRack, rm.placements), myLeave);
+        if (x > rbest) rbest = x;
+      }
+    } finally { removeFromBoard(m.placements); }
+    vals[i] = v - (rbest > -Infinity ? rbest : 0);
+  }
+  const kept = order.map(([, i]) => i);
+  const cand2 = kept.map(i => cand[i]), vals2 = kept.map(i => vals[i]);
+  if (bt) { cand2.push(bt); vals2.push(btv); }
+  return cand2.length ? cand2[vals2.indexOf(Math.max(...vals2))] : null;
 }
 
 // Best move by static evaluation: first strict maximum in scan order.

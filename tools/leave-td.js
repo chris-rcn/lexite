@@ -408,16 +408,18 @@ async function onlineLearn(opts) {
   // not responsiveness; a fast window just injects sampling noise into
   // every TD target via (points - b). The error EMAs (~3k window) smooth
   // the noisy TD residuals while staying responsive.
-  // The logged signal is eAbs/eRef — TD error relative to the zero-model
+  // The logged signal is mean|TD err| / mean|points-b| — TD error relative to the zero-model
   // residual |points - b|. It starts at 1.0 (zero weights explain nothing)
   // and falls toward the irreducible-noise floor as the leave model learns;
   // it is lr- and order-independent, so runs are directly comparable.
-  const betaErr = 0.0003;
   // b = running average move points (baseline), initialized at the measured
   // greedy self-play baseline (~35) so the slow EMA needs no warm-up ramp;
   // a checkpoint's saved b overrides on resume.
   let b = 35, nTrans = 0, nGames = 0;
-  let eAbs = 0, eRef = 0;                            // EMA of |TD err| and of |points - b|
+  // errRatio is display-only: report the TRUE mean over each log interval
+  // (sums reset at every printed line) instead of a short-memory EMA whose
+  // spot reading wobbled tick to tick.
+  let iAbs = 0, iRef = 0;                            // interval sums of |TD err| and |points - b|
   let nProbes = 0;                                   // probe updates (persisted so the ratio survives resumes)
   // resume from a checkpoint if one exists (survives container restarts)
   const resuming = opts.ckpt && fs.existsSync(opts.ckpt);
@@ -425,7 +427,6 @@ async function onlineLearn(opts) {
     const st = JSON.parse(fs.readFileSync(opts.ckpt, 'utf8'));
     sb.__importW(st.w); b = st.b; nGames = st.games; nTrans = st.trans;
     nProbes = st.probes || 0;                        // older ckpts lack it: count restarts from 0
-    if (st.eRef !== undefined) { eAbs = st.eAbs; eRef = st.eRef; }  // older ckpts lack these; restart the pair together
     console.log(`resumed from ${opts.ckpt}: games ${nGames}, trans ${nTrans}, b=${b.toFixed(1)}`);
     if (process.argv.includes('--init-blank')) console.log('--init-blank ignored: weights come from the checkpoint');
   } else if (opts.initBlank) {
@@ -440,13 +441,13 @@ async function onlineLearn(opts) {
   }
   // Display + checkpoint cadence: first after 10 games, then the period grows
   // ×1.5 per tick — dense feedback early on (and after a resume), cheap later.
-  // Capped so long runs still tick (and checkpoint) at least every 10k games,
+  // Capped so long runs still tick (and checkpoint) at least every 50k games,
   // bounding what a mid-interval Ctrl-C can lose.
-  const MAX_LOG_PERIOD = 10000;
+  const MAX_LOG_PERIOD = 50000;
   let logPeriod = 10, nextLogAt = nGames + logPeriod;
   const saveCkpt = () => {                            // atomic write (tmp + rename)
     if (!opts.ckpt) return;
-    fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, probes: nProbes, b, eAbs, eRef, w: sb.__exportW() }));
+    fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, probes: nProbes, b, w: sb.__exportW() }));
     fs.renameSync(opts.ckpt + '.tmp', opts.ckpt);
   };
   const prev = ['', ''];
@@ -468,8 +469,8 @@ async function onlineLearn(opts) {
       // finite and scored by undiscounted final margin, so leave values must
       // share a currency with move points (they are summed in move selection).
       const err = sb.__tdUpdate(prev[seat], points, r, b, lr, Math.min(1, bagN / 7));
-      eAbs += betaErr * (Math.abs(err) - eAbs);
-      eRef += betaErr * (Math.abs(points - b) - eRef);
+      iAbs += Math.abs(err);
+      iRef += Math.abs(points - b);
       b += betaB * (points - b);
       nTrans++;
     }
@@ -552,7 +553,8 @@ async function onlineLearn(opts) {
     nGames++;
     if (nGames >= nextLogAt) {
       const st = sb.__wStats();
-      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)}${opts.probeRatio > 0 ? ` | probes ${String(nProbes).padStart(7)}` : ''} | ${((Date.now() - t0) / 1000).toFixed(0).padStart(5)}s | b=${b.toFixed(1)} | errRatio=${eRef > 0 ? (eAbs / eRef).toFixed(3) : '  ---'} | avg|w|=${st.avg.toFixed(3)} nz=${String(st.nz).padStart(6)} max=${st.max.toFixed(1).padStart(4)} | ${spot()}`);
+      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)}${opts.probeRatio > 0 ? ` | probes ${String(nProbes).padStart(7)}` : ''} | ${((Date.now() - t0) / 1000).toFixed(0).padStart(5)}s | b=${b.toFixed(1)} | errRatio=${iRef > 0 ? (iAbs / iRef).toFixed(3) : '  ---'} | avg|w|=${st.avg.toFixed(3)} nz=${String(st.nz).padStart(6)} max=${st.max.toFixed(1).padStart(4)} | ${spot()}`);
+      iAbs = 0; iRef = 0;
       saveCkpt();
       logPeriod = Math.min(logPeriod * 1.5, MAX_LOG_PERIOD);
       nextLogAt = nGames + logPeriod;

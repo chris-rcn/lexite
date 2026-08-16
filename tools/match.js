@@ -495,10 +495,11 @@ async function main() {
   // 20 games, period ×1.5): long matches show trend and pace mid-run
   // without a line per game. Games finish out of order under --jobs, so
   // the summary counts completions, not pair indices.
-  console.log(`${'games'.padStart(8)} ${'A'.padStart(6)} ${'B'.padStart(6)} ${'A%'.padStart(6)} ${'A margin'.padStart(9)}` +
+  console.log(`${'games'.padStart(8)} ${'A'.padStart(6)} ${'B'.padStart(6)} ${'A%'.padStart(6)} ${'A margin'.padStart(9)} ${'A ms/mv'.padStart(8)} ${'B ms/mv'.padStart(8)}` +
     (opts.close !== undefined ? ` ${'clA'.padStart(6)} ${'clB'.padStart(6)} ${'clN'.padStart(6)}` : '') +
     ` ${'elapsed'.padStart(9)}`);
   let done = 0, liveA = 0, liveB = 0, liveTies = 0, liveMargin = 0;
+  let liveAms = 0, liveAmv = 0, liveBms = 0, liveBmv = 0;
   let tickPeriod = 20, tickAt = 20;
   // Close-game sub-tally: games whose standing was within --close points
   // when the bag first held <= closeBag tiles. Bag sizes can be skipped as
@@ -515,6 +516,8 @@ async function main() {
   const onResult = r => {
     if (r.reason === 'truncated') { skippedTrunc++; return; }
     done++; liveMargin += r.aScore - r.bScore;
+    liveAms += r.aStats.ms; liveAmv += r.aStats.moves;
+    liveBms += r.bStats.ms; liveBmv += r.bStats.moves;
     // The komi makes score equality impossible; a half-point gap marks a
     // raw tie that the komi resolved to the second player.
     if (r.aScore > r.bScore) liveA++; else liveB++;
@@ -530,7 +533,8 @@ async function main() {
       const am = liveMargin / done;
       const ratio = liveA + liveB ? (100 * liveA / (liveA + liveB)).toFixed(1) : '—';
       let row = `${String(done).padStart(8)} ${String(liveA).padStart(6)} ${String(liveB).padStart(6)}` +
-        ` ${ratio.padStart(6)} ${((am >= 0 ? '+' : '') + am.toFixed(1)).padStart(9)}`;
+        ` ${ratio.padStart(6)} ${((am >= 0 ? '+' : '') + am.toFixed(1)).padStart(9)}` +
+        ` ${(liveAmv ? (liveAms / liveAmv).toFixed(0) : '—').padStart(8)} ${(liveBmv ? (liveBms / liveBmv).toFixed(0) : '—').padStart(8)}`;
       if (opts.close !== undefined) row += ` ${String(closeA).padStart(6)} ${String(closeB).padStart(6)} ${String(closeN).padStart(6)}`;
       row += ` ${(((Date.now() - t0) / 1000).toFixed(0) + 's').padStart(9)}`;
       console.log(row);
