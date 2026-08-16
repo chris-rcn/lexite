@@ -221,7 +221,7 @@ Q.evalInRealm(`
   // the file's stamped parameters, never the live engine config — prod
   // locks between builds must not drift the referee. egMidBlend auto
   // (-1) for every low-bag stage, stamped in META.policyConfig.
-  ${ORACLE === 'policy' ? "for (const st of ['bag1','bag2','bag3','bag4','bag5','bag6','bag7']) STAGES[st].egMidBlend = -1;" : ''}
+  ${ORACLE === 'policy' || ORACLE === 'dual' ? "for (const st of ['bag1','bag2','bag3','bag4','bag5','bag6','bag7']) STAGES[st].egMidBlend = -1;" : ''}
   globalThis.__policySolve = async function (boardJson, rackJson) {
     state.board = JSON.parse(boardJson); state.isFirstMove = false; state.bag = new Array(BAG).fill('?');
     const rack = JSON.parse(rackJson).map(t => ({ letter: t.letter, isBlank: t.isBlank }));
@@ -254,6 +254,76 @@ Q.evalInRealm(`
           for (const world of worlds) ev += await simPlayoutValue(c.m.score, kept, world, oppSize, null);
         } finally { removeFromBoard(c.m.placements); }
         results.push({ k: __moveKey(c.m.placements), w: c.m.word, sc: c.m.score, sv: +c.val.toFixed(1), ex: +(ev / worlds.length).toFixed(2) });
+      }
+    } finally { PLAYOUT_DEFENSE = 0; state.bag = new Array(BAG).fill('?'); }
+    return JSON.stringify({ pool: pool.map(t => t.isBlank ? '?' : t.letter.toUpperCase()).join(''), results, allSolved: true, reason: null });
+  };
+  // Horizon value of one world (mirrors the engine's horizon branch):
+  // my draw from the world's order, opponent's best static reply on the
+  // post-move board, filled-rack leave differential damped by remaining
+  // bag depth. The dual oracle's second currency.
+  globalThis.__horizonWorldValue = async function (score, kept, world, oppSize) {
+    const oppRack = world.slice(0, oppSize);
+    let cursor = oppSize;
+    const myDrawStart = cursor;
+    const myDraw = Math.min(7 - kept.length, world.length - cursor);
+    cursor += myDraw;
+    state.bag = world.slice(cursor);
+    const reply = await findBestSimReply(oppRack);
+    const rScore = reply && reply.placements ? reply.score : 0;
+    const oppKept = reply ? rackWithout(oppRack, reply.placements || reply.tiles) : oppRack;
+    const oppDrawStart = cursor;
+    const oppDraw = Math.min(7 - oppKept.length, state.bag.length);
+    const target = 7; // bag <= 10 near the low-bag boundary: fill fully
+    let horizon = 0;
+    const scaleH = Math.min(1, (state.bag.length - oppDraw) / 7);
+    if (scaleH > 0 && leaveModelReady()) {
+      const specMy = Math.min(myDraw, Math.max(0, target - kept.length));
+      const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));
+      const myEval = kept.concat(world.slice(myDrawStart, myDrawStart + specMy));
+      const oppEval = oppKept.concat(world.slice(oppDrawStart, oppDrawStart + specOpp));
+      horizon = scaleH * (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
+    }
+    return score - rScore + horizon;
+  };
+  // Dual oracle: every arm priced in BOTH currencies over the SAME shared
+  // worlds — ex = defense-3 playout to the game end (terminal family),
+  // exh = 2-ply horizon + leave differential (horizon family). Judge
+  // disagreement is then measurable per arm, and the eval's blended
+  // regret discounts configs that win only under one family's blind
+  // spots.
+  globalThis.__dualSolve = async function (boardJson, rackJson) {
+    state.board = JSON.parse(boardJson); state.isFirstMove = false; state.bag = new Array(BAG).fill('?');
+    const rack = JSON.parse(rackJson).map(t => ({ letter: t.letter, isBlank: t.isBlank }));
+    const pool = deriveOpponentRack(rack);
+    const oppSize = pool.length - BAG;
+    if (oppSize < 0 || pool.length < BAG) return JSON.stringify({ skip: 1 });
+    const cands = await collectTopCandidates(rack, { candidates: ${K}, margin: 0 });
+    if (cands.length < 2) return JSON.stringify({ skip: 1 });
+    const rng = seededRng(positionHash(rack));
+    const worlds = [];
+    for (let w = 0; w < ${PWORLDS}; w++) {
+      const p = pool.slice();
+      for (let i = p.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [p[i], p[j]] = [p[j], p[i]];
+      }
+      worlds.push(p);
+    }
+    const results = [];
+    try {
+      for (const c of cands) {
+        const kept = rackWithout(rack, c.m.placements);
+        applyToBoard(c.m.placements);
+        let evT = 0, evH = 0;
+        try {
+          PLAYOUT_TEMP = 0; PLAYOUT_DEFENSE = 3;
+          for (const world of worlds) evT += await simPlayoutValue(c.m.score, kept, world, oppSize, null);
+          PLAYOUT_DEFENSE = 0;
+          for (const world of worlds) evH += await __horizonWorldValue(c.m.score, kept, world, oppSize);
+        } finally { removeFromBoard(c.m.placements); }
+        results.push({ k: __moveKey(c.m.placements), w: c.m.word, sc: c.m.score, sv: +c.val.toFixed(1),
+          ex: +(evT / worlds.length).toFixed(2), exh: +(evH / worlds.length).toFixed(2) });
       }
     } finally { PLAYOUT_DEFENSE = 0; state.bag = new Array(BAG).fill('?'); }
     return JSON.stringify({ pool: pool.map(t => t.isBlank ? '?' : t.letter.toUpperCase()).join(''), results, allSolved: true, reason: null });
@@ -393,7 +463,18 @@ Q.evalInRealm(`
   };
 `);
 
-const META = ORACLE === 'policy' ? {
+const META = ORACLE === 'dual' ? {
+  v: 8, // v8: dual oracle — every arm carries ex (defense-3 playout to
+        // game end) AND exh (2-ply horizon + leave differential) over
+        // the same shared worlds; eval blends the two regrets 50/50.
+  oracle: 'dual',
+  bagSize: BAG, candidates: K, baseSeed: BASE_SEED,
+  seedMode: 'stream',
+  candidateOrder: 'blend',
+  policyConfig: { worlds: PWORLDS, playoutDefense: 3, playoutTemp: 0, egMidBlend: -1 },
+  egWeightsMd5,
+  gameJsMd5: crypto.createHash('md5').update(fs.readFileSync(ENGINE)).digest('hex'),
+} : ORACLE === 'policy' ? {
   v: 7, // v7: all-policy oracle — every arm priced by information-legal
         // defense-3 playouts to the game end over shared sampled worlds;
         // no solver, no clairvoyance, no drops, one currency.
@@ -459,7 +540,7 @@ function save() { fs.writeFileSync(OUT + '.tmp', JSON.stringify(coll)); fs.renam
     Q._sandbox.__B = JSON.stringify(snap.board);
     Q._sandbox.__R = JSON.stringify(snap.rack);
     const tSolve = Date.now();
-    const r = JSON.parse(await Q.evalInRealm(ORACLE === 'policy' ? '__policySolve(__B, __R)' : '__refSolve(__B, __R)'));
+    const r = JSON.parse(await Q.evalInRealm(ORACLE === 'dual' ? '__dualSolve(__B, __R)' : ORACLE === 'policy' ? '__policySolve(__B, __R)' : '__refSolve(__B, __R)'));
     if (!r.skip) { solveMs += Date.now() - tSolve; solveN++; }
     if (r.skip) skipped++;
     else if (!r.allSolved) { if (r.reason === 'capped') capped++; else dropped++; }

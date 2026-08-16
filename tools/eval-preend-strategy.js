@@ -82,7 +82,7 @@ const engines = tests.map(code => {
 // collection's currency) or 'capped' (a split overran the budget).
 let refRealm = null;
 function refValue(meta, bJson, rackStr, poolStr, pick) {
-  if (meta.oracle === 'policy') return policyValue(meta, bJson, rackStr, poolStr, pick);
+  if (meta.oracle === 'policy' || meta.oracle === 'dual') return policyValue(meta, bJson, rackStr, poolStr, pick);
   if (!meta.solver || !meta.solver.width) return 'legacy';
   if (!refRealm) {
     refRealm = m.loadEngine(ENGINE, words, {});
@@ -399,6 +399,31 @@ function policyValue(meta, bJson, rackStr, poolStr, pick) {
         : '// pre-pin collection: playout blends follow the live engine config'}
       const BAG = ${meta.bagSize};
       const PWORLDS = ${meta.policyConfig.worlds};
+      const DUAL = ${meta.oracle === 'dual' ? 'true' : 'false'};
+      globalThis.__horizonWorldValue = async function (score, kept, world, oppSize) {
+        const oppRack = world.slice(0, oppSize);
+        let cursor = oppSize;
+        const myDrawStart = cursor;
+        const myDraw = Math.min(7 - kept.length, world.length - cursor);
+        cursor += myDraw;
+        state.bag = world.slice(cursor);
+        const reply = await findBestSimReply(oppRack);
+        const rScore = reply && reply.placements ? reply.score : 0;
+        const oppKept = reply ? rackWithout(oppRack, reply.placements || reply.tiles) : oppRack;
+        const oppDrawStart = cursor;
+        const oppDraw = Math.min(7 - oppKept.length, state.bag.length);
+        const target = 7;
+        let horizon = 0;
+        const scaleH = Math.min(1, (state.bag.length - oppDraw) / 7);
+        if (scaleH > 0 && leaveModelReady()) {
+          const specMy = Math.min(myDraw, Math.max(0, target - kept.length));
+          const specOpp = Math.min(oppDraw, Math.max(0, target - oppKept.length));
+          const myEval = kept.concat(world.slice(myDrawStart, myDrawStart + specMy));
+          const oppEval = oppKept.concat(world.slice(oppDrawStart, oppDrawStart + specOpp));
+          horizon = scaleH * (leaveValueFromCounts(tileCounts(myEval)) - leaveValueFromCounts(tileCounts(oppEval)));
+        }
+        return score - rScore + horizon;
+      };
       globalThis.__policyValue = async function () {
         state.board = JSON.parse(__B); state.isFirstMove = false; state.bag = new Array(BAG).fill('?');
         const rack = [...__R].map(ch => ({ letter: ch === '?' ? '' : ch, isBlank: ch === '?' }));
@@ -419,15 +444,19 @@ function policyValue(meta, bJson, rackStr, poolStr, pick) {
         PLAYOUT_TEMP = ${meta.policyConfig.playoutTemp}; PLAYOUT_DEFENSE = ${meta.policyConfig.playoutDefense};
         const kept = rackWithout(rack, pick.placements);
         applyToBoard(pick.placements);
-        let ev = 0;
+        let ev = 0, evH = 0;
         try {
           for (const world of worlds) ev += await simPlayoutValue(pick.score, kept, world, oppSize, null);
+          if (DUAL) {
+            PLAYOUT_DEFENSE = 0;
+            for (const world of worlds) evH += await __horizonWorldValue(pick.score, kept, world, oppSize);
+          }
         } finally {
           removeFromBoard(pick.placements);
           PLAYOUT_DEFENSE = 0; PLAYOUT_TEMP = 0;
           state.bag = new Array(BAG).fill('?');
         }
-        return ev / worlds.length;
+        return DUAL ? { t: ev / worlds.length, h: evH / worlds.length } : ev / worlds.length;
       };`);
   }
   policyRealm._sandbox.__B = bJson;
@@ -439,7 +468,9 @@ function policyValue(meta, bJson, rackStr, poolStr, pick) {
 
 async function main() {
   const solver = coll.meta.solver || { budget: coll.meta.budget };
-  console.log(coll.meta.oracle === 'policy'
+  console.log(coll.meta.oracle === 'dual'
+    ? `Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, DUAL oracle: defense-${coll.meta.policyConfig.playoutDefense} playouts + 2-ply horizon x ${coll.meta.policyConfig.worlds} shared worlds, blended regret, top-${coll.meta.candidates})`
+    : coll.meta.oracle === 'policy'
     ? `Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, all-policy oracle: defense-${coll.meta.policyConfig.playoutDefense} playouts x ${coll.meta.policyConfig.worlds} worlds, top-${coll.meta.candidates})`
     : `Benchmark: ${COLL} (${coll.entries.length} positions, bag ${BAG} -> stage ${STG}, solver budget ${solver.budget}${solver.width ? `, width ${solver.width}, terminal` : ' (legacy reference)'}, top-${coll.meta.candidates})`);
   if (coll.meta.gameJsMd5) {
@@ -498,8 +529,11 @@ async function main() {
   for (const e of coll.entries) {
     const bJson = JSON.stringify(decodeBoard(e.b));
     const rJson = JSON.stringify(rackArr(e.r));
+    const DUAL = coll.meta.oracle === 'dual';
     const bySig = new Map(e.m.map(r => [r.k, r.ex]));
+    const bySigH = DUAL ? new Map(e.m.map(r => [r.k, r.exh])) : null;
     const best = Math.max(...e.m.map(r => r.ex));
+    const bestH = DUAL ? Math.max(...e.m.map(r => r.exh)) : 0;
     for (let i = 0; i < engines.length; i++) {
       engines[i]._sandbox.__B = bJson;
       engines[i]._sandbox.__R = rJson;
@@ -510,21 +544,32 @@ async function main() {
       msTotals[i]++;
       const coveredPick = e.m.find(a => a.k === pick.sig);
       let v = bySig.get(pick.sig);
+      let vH = DUAL ? bySigH.get(pick.sig) : 0;
       if (v === undefined) {
         const rv = pick.placements ? await refValue(coll.meta, bJson, e.r, e.p, pick) : 'pass';
-        if (typeof rv !== 'number') { unsolved[i]++; continue; }
-        v = rv;
+        if (DUAL) {
+          if (typeof rv !== 'object' || rv === null) { unsolved[i]++; continue; }
+          v = rv.t; vH = rv.h;
+        } else {
+          if (typeof rv !== 'number') { unsolved[i]++; continue; }
+          v = rv;
+        }
         uncovered[i]++;
         if (v - best > 1e-6) { beaten[i]++; beatenMax[i] = Math.max(beatenMax[i], v - best); }
       }
+      // Dual collections score the mean of the two currencies' regrets:
+      // a config must satisfy both judges to score well.
+      const regret = DUAL
+        ? (Math.max(0, best - v) + Math.max(0, bestH - vH)) / 2
+        : Math.max(0, best - v);
       // A ref-solved pick can exceed the stored best (the builder's candidate
       // cut missed it); the baseline was loose, not the play superoptimal —
       // regret floors at 0 (the beaten footer still reports the discovery).
       if (DETAIL) {
-        console.log(`  # pos ${String(done + 1).padStart(4)} T${i} s=${String(e.s ?? '-').padStart(10)} regret=${Math.max(0, best - v).toFixed(2).padStart(7)} ms=${String(ms).padStart(6)} pick=${pick.sig === 'pass' ? 'pass' : (coveredPick && coveredPick.w) || pick.sig}${bySig.get(pick.sig) === undefined ? ' [uncovered]' : ''}`);
+        console.log(`  # pos ${String(done + 1).padStart(4)} T${i} s=${String(e.s ?? '-').padStart(10)} regret=${regret.toFixed(2).padStart(7)} ms=${String(ms).padStart(6)} pick=${pick.sig === 'pass' ? 'pass' : (coveredPick && coveredPick.w) || pick.sig}${bySig.get(pick.sig) === undefined ? ' [uncovered]' : ''}`);
       }
-      regrets[i].push(Math.max(0, best - v));
-      if (best - v < 1e-6) optimal[i]++;
+      regrets[i].push(regret);
+      if (regret < 1e-6) optimal[i]++;
     }
     done++;
     if (done >= hbAt) { printRow(); lastPrinted = done; hbAt = Math.ceil(hbAt * 1.5); }

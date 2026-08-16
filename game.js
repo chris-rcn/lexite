@@ -2146,6 +2146,15 @@ const STAGES = {
   // overrule replaced the z=1.5 gate (0.48 vs 0.69 on the contested
   // bench); the threshold optimum is interior (P<=0.6 worse).
   bagGt7: { ...SIM_BASE, mode: 'horizon', samples: 100, candidates: 6, alloc: 'halving', movegenBudget: 135000, bayes: 1, overruleP: 0.7 },
+  // (The horizon/terminal boundary at bag 8 was inherited, then measured
+  // in 2026-08: a temporary bag8 stage enabled an isolated-decision A/B
+  // (static to bag 9, contested decision at 8, prod after; 987 counted
+  // games: dead even) and a dual-currency oracle (defense-3 playouts AND
+  // 2-ply horizon over shared worlds, 152 positions): horizon prod beat
+  // the bag7-shape terminal transplant ~3 sigma, and terminal measured
+  // exactly static-grade — the full inversion of bag7, where terminal
+  // dominated. The crossover sits between 7 and 8; the boundary stays.
+  // The judges disagree most exactly at bag 8 — the crossover band.)
 };
 
 // bag length -> stage key.

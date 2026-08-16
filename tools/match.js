@@ -79,6 +79,7 @@ function parseArgs(argv) {
     // late games, so the unfiltered tally dilutes their signal ~20:1.
     else if (arg === '--close') opts.close = parseInt(argv[++i], 10);
     else if (arg === '--close-bag') opts.closeBag = parseInt(argv[++i], 10);
+    else if (arg === '--must-see-bag') opts.mustSeeBag = parseInt(argv[++i], 10);
     else if (arg === '--verbose') opts.verbose = true;
     else if (arg === '--play-one') opts.playOne = argv[++i]; // internal: worker mode
     else { console.error(`Unknown argument: ${arg}`); process.exit(2); }
@@ -389,7 +390,17 @@ async function playSpec(spec, verbose, label) {
   if (spec.aEval) A.evalInRealm(stagesEval(spec.aEval));
   if (spec.bEval) B.evalInRealm(stagesEval(spec.bEval));
   const seatEngines = spec.swap ? [B, A] : [A, B];
-  const g = await playGame(seatEngines, spec.bag, verbose, label);
+  // --must-see-bag N: truncate (and later exclude) games where no mover
+  // ever faces exactly N bag tiles — a multi-tile play can jump the bag
+  // past N, and such games carry no contested decision worth paying the
+  // endgame for. The prefix is identical across the pair, so both games
+  // of a pair truncate identically (no selection bias).
+  let sawBag = false;
+  const onPos = spec.mustSeeBag ? (board, bag) => {
+    if (bag.length === spec.mustSeeBag) sawBag = true;
+    return !(bag.length < spec.mustSeeBag && !sawBag);
+  } : null;
+  const g = await playGame(seatEngines, spec.bag, verbose, label, onPos);
   // Score margin at low-bag entry, converted to A-minus-B terms (for close-game
   // filtering regardless of which seat A took this game).
   const mLow = g.marginLowbag == null ? null : (spec.swap ? -g.marginLowbag : g.marginLowbag);
@@ -475,7 +486,7 @@ async function main() {
     length: nPairs * 2,
     at(i) {
       const seed = opts.seed + (i >> 1);
-      return { a: aFile, b: bFile, swap: (i & 1) === 1, bag: buildSeededBag(mulberry32(seed)), seed, staticOnly: opts.static, aEval: opts.aEval, bEval: opts.bEval };
+      return { a: aFile, b: bFile, swap: (i & 1) === 1, bag: buildSeededBag(mulberry32(seed)), seed, staticOnly: opts.static, aEval: opts.aEval, bEval: opts.bEval, mustSeeBag: opts.mustSeeBag };
     },
   };
 
@@ -500,7 +511,9 @@ async function main() {
     return undefined;
   };
   let closeN = 0, closeA = 0, closeB = 0, closeSum = 0;
+  let skippedTrunc = 0;
   const onResult = r => {
+    if (r.reason === 'truncated') { skippedTrunc++; return; }
     done++; liveMargin += r.aScore - r.bScore;
     // The komi makes score equality impossible; a half-point gap marks a
     // raw tie that the komi resolved to the second player.
@@ -543,8 +556,11 @@ async function main() {
     B: { wins: 0, points: 0, ms: 0, moves: 0 },
     ties: 0, gameMoves: 0,
   };
+  let counted = 0;
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
+    if (r.reason === 'truncated') continue;
+    counted++;
     totals.A.points += r.aScore; totals.B.points += r.bScore;
     totals.A.ms += r.aStats.ms; totals.A.moves += r.aStats.moves;
     totals.B.ms += r.bStats.ms; totals.B.moves += r.bStats.moves;
@@ -553,7 +569,7 @@ async function main() {
     if (Math.abs(r.aScore - r.bScore) === 0.5) totals.ties++; // raw tie, komi-decided
   }
 
-  const games = specs.length;
+  const games = opts.mustSeeBag !== undefined ? counted : specs.length;
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   const perMove = t => t.moves ? (t.ms / t.moves).toFixed(0) : '—';
   console.log(`\nResult over ${games} games (${secs}s wall):`);
@@ -563,6 +579,9 @@ async function main() {
   console.log(`  A win ratio: ${games ? (100 * totals.A.wins / games).toFixed(1) : '—'}%`);
   console.log(`  A margin (avg A − B per game): ${((totals.A.points - totals.B.points) / games).toFixed(1)} pts`);
   console.log(`  Avg moves per game: ${(totals.gameMoves / games).toFixed(1)}`);
+  if (opts.mustSeeBag !== undefined) {
+    console.log(`  Skipped (never faced bag ${opts.mustSeeBag}): ${skippedTrunc} of ${specs.length}`);
+  }
   if (opts.close !== undefined) {
     const ties = closeN - closeA - closeB;
     console.log(`  Close games (|margin at bag<=${closeBag} entry| <= ${opts.close}): ${closeN} of ${games}`);
