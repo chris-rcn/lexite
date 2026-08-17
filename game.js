@@ -2906,6 +2906,21 @@ async function findBestStaticMove(rack) {
 // cfg.candidates, then (if cfg.margin > 0) prunes the tail of moves more than
 // cfg.margin points behind the best — so the arm count adapts down when a move
 // is clearly best, but never exceeds the cap. At least the static best is kept.
+// (A static "what does this move open" term was implemented and measured
+// negative: penalize each candidate by the best hot spot it exposes — the
+// general form of "a TL next to a vowel", read off the movegen's own
+// cross-sets as max legal-letter value x multiplier over premium squares
+// adjacent to newly placed tiles, restricted to letters the opponent could
+// still hold. It lost everywhere: bag2 1.34 -> 1.58/1.68, bag5 neutral,
+// midgame 0.284 -> 0.287/0.351. The reason is structural: worlds sample the
+// opponent's RACK, but the reply inside each world is an exhaustive best-
+// static search, so a sampled world that deals the opponent the Z already
+// finds the lane. The static term double-counts a danger the search prices
+// exactly — and the harm scales with world coverage, worst at bag2 where
+// all 36 splits are enumerated. General lesson: a feature that duplicates
+// what the search computes is harmful, not merely redundant; only features
+// the search structurally cannot see are worth adding.)
+
 async function collectTopCandidates(rack, cfg) {
   const all = [];
   await scanStaticMoves(rack, (m, val) => { all.push({ m, val }); });
