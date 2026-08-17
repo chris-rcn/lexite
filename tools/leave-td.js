@@ -362,7 +362,7 @@ async function onlineLearn(opts) {
     function each(counts, cb){
       const present=[]; for(let i=0;i<NT;i++) if(counts[i]>0) present.push(i);
       (function rec(pi,size,mult,idx,R){
-        if(pi===present.length){ if(size>=1) cb(idx, mult); return; }
+        if(pi===present.length){ if(size>=1) cb(idx, mult, size); return; }
         const t=present[pi], c=counts[t], maxS=Math.min(c, MAXORD-size);
         for(let s=0,add=0;s<=maxS;s++){
           rec(pi+1,size+s,mult*BINOM[c][s],idx+add,R-s);
@@ -374,16 +374,22 @@ async function onlineLearn(opts) {
     const fill=(buf,s)=>{ buf.fill(0); for(const ch of s) buf[ch==='?'?26:ch.charCodeAt(0)-65]++; };
     // in-realm leave value used by the move search (no membrane crossing)
     installLeaveHook((counts)=>{ let v=0; each(counts,(rank,mult)=>{v+=mult*__W[rank];}); return v; });
-    const rankBuf=new Int32Array(64), multBuf=new Float64Array(64);
+    const rankBuf=new Int32Array(64), multBuf=new Float64Array(64), sizeBuf=new Uint8Array(64);
     let __wSum=0, __wCnt=0;                         // |w| accumulated per update event since last __wStats
+    // Same accumulation restricted to order==MAXORD — the largest feature
+    // class by count, and the one whose weights are least supported by data.
+    // Watching it separately shows whether the tail is still growing or has
+    // parked, independent of the low orders that dominate avg|w|.
+    let __hiSum=0, __hiCnt=0;
     // one TD update per transition; l,r are leave strings
     globalThis.__tdUpdate=(lStr,points,rStr,b,lr,gamma)=>{
       fill(rcBuf,rStr); let Vr=0; each(rcBuf,(rank,mult)=>{Vr+=mult*__W[rank];});
       fill(lcBuf,lStr); let m=0,V=0,norm=0;
-      each(lcBuf,(rank,mult)=>{rankBuf[m]=rank;multBuf[m]=mult;V+=mult*__W[rank];norm+=mult*mult;m++;});
+      each(lcBuf,(rank,mult,size)=>{rankBuf[m]=rank;multBuf[m]=mult;sizeBuf[m]=size;V+=mult*__W[rank];norm+=mult*mult;m++;});
       const err=(points-b)+gamma*Vr-V;
       const step=lr*err/(norm+1);
-      for(let j=0;j<m;j++){ const w=__W[rankBuf[j]]+=step*multBuf[j]; __wSum+=w<0?-w:w; __wCnt++; }
+      for(let j=0;j<m;j++){ const w=__W[rankBuf[j]]+=step*multBuf[j]; const a=w<0?-w:w; __wSum+=a; __wCnt++;
+        if(sizeBuf[j]===MAXORD){ __hiSum+=a; __hiCnt++; } }
       return err;                                   // TD error, for tracking
     };
     globalThis.__spotValue=(s)=>{ fill(lcBuf,s); let v=0; each(lcBuf,(rank,mult)=>{v+=mult*__W[rank];}); return v; };
@@ -391,7 +397,7 @@ async function onlineLearn(opts) {
     // a weight updated twice contributes twice, so the average is weighted by
     // how often each feature is actually exercised; nz counts all nonzero
     // weights and max is the global divergence canary.
-    globalThis.__wStats=()=>{ let nz=0,mx=0; for(let i=0;i<SIZE;i++){ const a=__W[i]<0?-__W[i]:__W[i]; if(a>0){ nz++; if(a>mx)mx=a; } } const avg=__wCnt?__wSum/__wCnt:0; __wSum=0; __wCnt=0; return { avg:avg, nz:nz, max:mx }; };
+    globalThis.__wStats=()=>{ let nz=0,mx=0; for(let i=0;i<SIZE;i++){ const a=__W[i]<0?-__W[i]:__W[i]; if(a>0){ nz++; if(a>mx)mx=a; } } const avg=__wCnt?__wSum/__wCnt:0; const hi=__hiCnt?__hiSum/__hiCnt:0; __wSum=0; __wCnt=0; __hiSum=0; __hiCnt=0; return { avg:avg, nz:nz, max:mx, hi:hi }; };
     // checkpoint: export/import the (sparse) nonzero weights as a compact string
     globalThis.__exportW=()=>{ let out=''; for(let i=0;i<SIZE;i++){ if(__W[i]!==0){ const r=Math.round(__W[i]*1e4)/1e4; if(r!==0) out += (out?',':'') + i + ':' + r; } } return out; };
     globalThis.__importW=(s)=>{ if(!s) return; for(const part of s.split(',')){ const c=part.indexOf(':'); __W[+part.slice(0,c)] = +part.slice(c+1); } };
@@ -451,7 +457,14 @@ async function onlineLearn(opts) {
     fs.renameSync(opts.ckpt + '.tmp', opts.ckpt);
   };
   const prev = ['', ''];
-  const spot = () => ['S', '?', 'EE', 'QU', 'ER', 'AEINRS', 'UUVWII'].map(s => `${s}=${sb.__spotValue(s).toFixed(2).padStart(6)}`).join(' ');
+  // Spot leaves whose values are tracked per interval; they are the columns
+  // the equilibria are read from (tools/leave-value.js reports the same set).
+  const SPOT = ['S', '?', 'EE', 'QU', 'ER', 'AEINRS', 'UUVWII'];
+  const P = opts.probeRatio > 0;
+  const headerRow = `${'games'.padStart(9)} ${'trans'.padStart(10)}${P ? ' ' + 'probes'.padStart(10) : ''}` +
+    ` ${'elapsed'.padStart(8)} ${'b'.padStart(5)} ${'errRatio'.padStart(8)} ${'avg|w|'.padStart(7)}` +
+    ` ${('o' + opts.maxorder + '|w|').padStart(7)} ${'nz'.padStart(7)} ${'max'.padStart(5)} ` +
+    SPOT.map(t => t.padStart(7)).join(' ');
   const onTurn = (seat, type, points, leftover, bagN) => {
     // play and exchange both end with a valid kept leave (points=0 for an
     // exchange); only a pass keeps the full 7-tile rack (out of domain, no
@@ -478,6 +491,7 @@ async function onlineLearn(opts) {
   };
   const t0 = Date.now();
   console.log(`lr=${lr} order=${opts.maxorder} dither=${opts.dither} init-blank=${opts.initBlank} probe-ratio=${opts.probeRatio} seed=${opts.seed} ckpt=${opts.ckpt || 'none'}`);
+  console.log(headerRow);
   // Synthetic-probe exploration (exploring starts): with --probe-ratio R,
   // fraction R of all TD updates come from probes — chained greedy rollouts
   // started from a leave that is sampled (from the live pool, supply-
@@ -553,7 +567,11 @@ async function onlineLearn(opts) {
     nGames++;
     if (nGames >= nextLogAt) {
       const st = sb.__wStats();
-      console.log(`  games ${String(nGames).padStart(6)} | trans ${String(nTrans).padStart(7)}${opts.probeRatio > 0 ? ` | probes ${String(nProbes).padStart(7)}` : ''} | ${((Date.now() - t0) / 1000).toFixed(0).padStart(5)}s | b=${b.toFixed(1)} | errRatio=${iRef > 0 ? (iAbs / iRef).toFixed(3) : '  ---'} | avg|w|=${st.avg.toFixed(3)} nz=${String(st.nz).padStart(6)} max=${st.max.toFixed(1).padStart(4)} | ${spot()}`);
+      console.log(`${String(nGames).padStart(9)} ${String(nTrans).padStart(10)}${P ? ' ' + String(nProbes).padStart(10) : ''}` +
+        ` ${(((Date.now() - t0) / 1000).toFixed(0) + 's').padStart(8)} ${b.toFixed(1).padStart(5)}` +
+        ` ${(iRef > 0 ? (iAbs / iRef).toFixed(3) : '---').padStart(8)} ${st.avg.toFixed(3).padStart(7)}` +
+        ` ${st.hi.toFixed(4).padStart(7)} ${String(st.nz).padStart(7)} ${st.max.toFixed(1).padStart(5)} ` +
+        SPOT.map(t => sb.__spotValue(t).toFixed(2).padStart(7)).join(' '));
       iAbs = 0; iRef = 0;
       saveCkpt();
       logPeriod = Math.min(logPeriod * 1.5, MAX_LOG_PERIOD);

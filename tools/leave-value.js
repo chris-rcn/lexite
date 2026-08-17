@@ -71,12 +71,19 @@ function rankOf(counts) {
 const sets = new Map(); // label -> weights
 for (const f of files) sets.set(path.basename(f).replace(/\.(ckpt\.json|txt\.gz|json|gz)$/, ''), loadWeights(f));
 
-const width = Math.max(10, ...[...sets.keys()].map(k => k.length + 2));
-console.log(`${'leave'.padEnd(10)}${[...sets.keys()].map(k => k.padStart(width)).join('')}`);
+// With --compare, every comparison column is followed by its difference
+// from the primary file (compare minus primary), signed.
+const labels = [...sets.keys()];
+const width = Math.max(10, ...labels.map(k => k.length + 2));
+const DW = 9;
+const signed = v => (v >= 0 ? '+' : '') + v.toFixed(2);
+const header = labels.map((k, i) => k.padStart(width) + (i > 0 ? 'diff'.padStart(DW) : '')).join('');
+console.log(`${'leave'.padEnd(10)}${header}`);
 for (const L of leaves) {
   const c = countsOf(L);
-  const row = [...sets.values()].map(w => td.valueFromFeatures(c, w).toFixed(2).padStart(width));
-  console.log(`${L.padEnd(10)}${row.join('')}`);
+  const vals = [...sets.values()].map(w => td.valueFromFeatures(c, w));
+  const row = vals.map((v, i) => v.toFixed(2).padStart(width) + (i > 0 ? signed(v - vals[0]).padStart(DW) : '')).join('');
+  console.log(`${L.padEnd(10)}${row}`);
 }
 
 if (BREAKDOWN) {
@@ -96,7 +103,7 @@ if (BREAKDOWN) {
       sub[t] = 0;
     })(0, new Int32Array(td.NT), 1, 0);
     console.log(`\n${L} — feature breakdown (contribution = mult x weight)`);
-    console.log(`${'sub'.padEnd(10)} ${'ord'.padStart(3)} ${'mult'.padStart(5)}${[...sets.keys()].map(k => (k + ' w').padStart(width) + 'contrib'.padStart(9)).join('')}`);
+    console.log(`${'sub'.padEnd(10)} ${'ord'.padStart(3)} ${'mult'.padStart(5)}${labels.map((k, i) => (k + ' w').padStart(width) + 'contrib'.padStart(9) + (i > 0 ? 'diff'.padStart(DW) : '')).join('')}`);
     const rows = subs.map(({ sub, mult }) => {
       const rank = rankOf(sub);
       const per = [...sets.values()].map(w => ({ w: w[rank], contrib: mult * w[rank] }));
@@ -105,7 +112,8 @@ if (BREAKDOWN) {
       .sort((a, b) => Math.abs(b.per[0].contrib) - Math.abs(a.per[0].contrib));
     for (const r of rows) {
       console.log(`${r.s.padEnd(10)} ${String(r.ord).padStart(3)} ${String(r.mult).padStart(5)}` +
-        r.per.map(p => p.w.toFixed(3).padStart(width) + p.contrib.toFixed(2).padStart(9)).join(''));
+        r.per.map((p, i) => p.w.toFixed(3).padStart(width) + p.contrib.toFixed(2).padStart(9) +
+          (i > 0 ? signed(p.contrib - r.per[0].contrib).padStart(DW) : '')).join(''));
     }
   }
 }
