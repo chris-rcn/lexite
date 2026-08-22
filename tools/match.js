@@ -69,6 +69,10 @@ function parseArgs(argv) {
     else if (arg === '--seed') opts.seed = parseInt(argv[++i], 10);
     else if (arg === '--jobs') opts.jobs = parseInt(argv[++i], 10);
     else if (arg === '--static') opts.static = true;
+    // Per-engine static play (playSpec already honours aStatic/bStatic):
+    // lets one side play statically while the other simulates.
+    else if (arg === '--a-static') opts.aStatic = true;
+    else if (arg === '--b-static') opts.bStatic = true;
     // Realm code evaluated in one engine's context after load (e.g.
     // 'STAGES.bag1.scoreAware = 1') — lets a match A/B two stage configs
     // of the same engine build.
@@ -486,7 +490,7 @@ async function main() {
     length: nPairs * 2,
     at(i) {
       const seed = opts.seed + (i >> 1);
-      return { a: aFile, b: bFile, swap: (i & 1) === 1, bag: buildSeededBag(mulberry32(seed)), seed, staticOnly: opts.static, aEval: opts.aEval, bEval: opts.bEval, mustSeeBag: opts.mustSeeBag };
+      return { a: aFile, b: bFile, swap: (i & 1) === 1, bag: buildSeededBag(mulberry32(seed)), seed, staticOnly: opts.static, aStatic: opts.aStatic, bStatic: opts.bStatic, aEval: opts.aEval, bEval: opts.bEval, mustSeeBag: opts.mustSeeBag };
     },
   };
 

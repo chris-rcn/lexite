@@ -341,7 +341,14 @@ function strC(s) { const a = new Uint8Array(NT); for (const ch of s) a[ch === '?
 // linear seed, no loaded table. Each transition is consumed exactly once,
 // as it is generated; there is no dataset and no epochs.
 async function onlineLearn(opts) {
-  const engine = loadEngine(path.resolve(__dirname, '..') + '/game.js', loadWords(), { staticOnly: true });
+  // --sim: generate trajectories with the FULL production engine (every
+  // stage simulating) instead of static play. The value function is
+  // on-policy — V(L) is the expected future under whatever policy played
+  // the games — so a table trained on static play encodes what tiles are
+  // worth to a static player, then gets deployed inside something much
+  // stronger. Costs ~12x per move, and probes pay it too (they share this
+  // engine), so expect roughly 3k games/day against static's ~60k.
+  const engine = loadEngine(path.resolve(__dirname, '..') + '/game.js', loadWords(), { staticOnly: !opts.sim });
   // Inject the feature model + a sandbox-resident weight vector INTO the
   // engine's realm, and install an in-realm leave-value function as the hook.
   // The move search then evaluates leaves with the live weights without ever
@@ -445,12 +452,12 @@ async function onlineLearn(opts) {
     const c = new Int32Array(NT); c[26] = 1;
     sb.__importW(SL.leaveRank(c) + ':' + opts.initBlank);
   }
-  // Display + checkpoint cadence: first after 10 games, then the period grows
+  // Display + checkpoint cadence: first after a single game, then the period grows
   // ×1.5 per tick — dense feedback early on (and after a resume), cheap later.
   // Capped so long runs still tick (and checkpoint) at least every 50k games,
   // bounding what a mid-interval Ctrl-C can lose.
   const MAX_LOG_PERIOD = 50000;
-  let logPeriod = 10, nextLogAt = nGames + logPeriod;
+  let logPeriod = 1, nextLogAt = nGames + logPeriod;
   const saveCkpt = () => {                            // atomic write (tmp + rename)
     if (!opts.ckpt) return;
     fs.writeFileSync(opts.ckpt + '.tmp', JSON.stringify({ games: nGames, trans: nTrans, probes: nProbes, b, w: sb.__exportW() }));
@@ -490,7 +497,7 @@ async function onlineLearn(opts) {
     prev[seat] = r;
   };
   const t0 = Date.now();
-  console.log(`lr=${lr} order=${opts.maxorder} dither=${opts.dither} init-blank=${opts.initBlank} probe-ratio=${opts.probeRatio} seed=${opts.seed} ckpt=${opts.ckpt || 'none'}`);
+  console.log(`lr=${lr} order=${opts.maxorder} policy=${opts.sim ? 'sim (prod stages)' : 'static'} dither=${opts.dither} init-blank=${opts.initBlank} probe-ratio=${opts.probeRatio} seed=${opts.seed} ckpt=${opts.ckpt || 'none'}`);
   console.log(headerRow);
   // Synthetic-probe exploration (exploring starts): with --probe-ratio R,
   // fraction R of all TD updates come from probes — chained greedy rollouts
@@ -622,6 +629,7 @@ function main() {
     games: process.argv.includes('--games') ? parseInt(arg('--games'), 10) : Infinity, // unlimited unless capped
 
     lr: parseFloat(arg('--lr', '0.001')),
+    sim: process.argv.includes('--sim'),
     maxorder: parseInt(arg('--maxorder', '5'), 10),
     betaB: parseFloat(arg('--betaB', '0.0002')),
     dither: parseFloat(arg('--dither', '0')),
